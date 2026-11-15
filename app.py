@@ -4,6 +4,7 @@ import json
 import random
 import uuid
 from flask import Flask, jsonify, render_template_string, request
+from itertools import combinations
 
 app = Flask(__name__)
 
@@ -18,22 +19,47 @@ def card_label(card):
 
 
 def is_valid_set(three_cards):
+  """Returns True if 3 cards form either:
+
+    1. Three of a kind (same rank, e.g., 9♥, 9♦, 9♠)
+    2. A suited sequence of 3 (e.g., A♣-2♣-3♣, 4♥-5♥-6♥, or Q♣-K♣-A♣)
+    """
+  if len(three_cards) != 3:
+    return False
+
   ranks = sorted(c[0] for c in three_cards)
-  suits = [c[1] for c in three_cards]
+  suits = {c[1] for c in three_cards}
+
+  # Case 1: Same number / rank
   if ranks[0] == ranks[1] == ranks[2]:
     return True
-  if len(set(suits)) == 1 and ranks[0] + 1 == ranks[1] and ranks[1] + 1 == ranks[2]:
-    return True
+
+  # Case 2: Sequence in the same suit
+  if len(suits) == 1:
+    # Standard consecutive sequence (e.g., [1, 2, 3] or [11, 12, 13])
+    if ranks[0] + 1 == ranks[1] and ranks[1] + 1 == ranks[2]:
+      return True
+    # Ace-high sequence: Q (12), K (13), A (1)
+    if ranks == [1, 12, 13]:
+      return True
+
   return False
 
 
 def check_win(hand):
+  """Returns True if a 6-card hand can be partitioned into two disjoint valid sets of 3."""
   if len(hand) != 6:
     return False
-  for set1 in combinations(hand, 3):
-    set2 = [c for c in hand if c not in set1]
+
+  # Partition using card indices (0..5) so every 3-card split is exact
+  all_indices = set(range(6))
+  for idx_set1 in combinations(range(6), 3):
+    idx_set2 = all_indices - set(idx_set1)
+    set1 = [hand[i] for i in idx_set1]
+    set2 = [hand[i] for i in idx_set2]
     if is_valid_set(set1) and is_valid_set(set2):
       return True
+
   return False
 
 
@@ -409,5 +435,69 @@ HTML_PAGE = """
 </html>
 """
 
+# --- TEST SUITE ---
+def run_tests():
+  # 1. Your exact hand: A♣, K♣, Q♣ + three 9s (shuffled order!)
+  hand_akq_999 = [[1, '♣'], [9, '♥'], [13, '♣'], [9, '♦'], [12, '♣'], [9, '♠']]
+  assert check_win(hand_akq_999) is True, 'Failed: A-K-Q clubs + three 9s'
+
+  # 2. Ace-low sequence + three of a kind
+  hand_a23_kkk = [[1, '♥'], [2, '♥'], [3, '♥'], [13, '♥'], [13, '♦'], [13, '♠']]
+  assert check_win(hand_a23_kkk) is True, 'Failed: A-2-3 hearts + three Kings'
+
+  # 3. Two suited sequences (one Ace-high, one mid-rank)
+  hand_two_seqs = [[12, '♠'], [13, '♠'], [1, '♠'], [4, '♦'], [5, '♦'], [6, '♦']]
+  assert check_win(hand_two_seqs) is True, 'Failed: Two suited sequences'
+
+  # 4. Two three-of-a-kinds
+  hand_two_trips = [[7, '♥'], [7, '♦'], [7, '♣'], [2, '♠'], [2, '♥'], [2, '♣']]
+  assert check_win(hand_two_trips) is True, 'Failed: Two three-of-a-kinds'
+
+  # 5. Overlapping cards edge case (e.g., 4♥, 4♦, 4♠, 5♠, 6♠, 4♣ -> valid: {4♥,4♦,4♣} + {4♠,5♠,6♠})
+  hand_overlap = [[4, '♥'], [4, '♦'], [4, '♠'], [5, '♠'], [6, '♠'], [4, '♣']]
+  assert (
+      check_win(hand_overlap) is True
+  ), 'Failed: Overlapping rank/sequence split'
+
+  # 6. Invalid: K-A-2 wrap-around should NOT win
+  hand_ka2_invalid = [
+      [13, '♣'],
+      [1, '♣'],
+      [2, '♣'],
+      [9, '♥'],
+      [9, '♦'],
+      [9, '♠'],
+  ]
+  assert (
+      check_win(hand_ka2_invalid) is False
+  ), 'Failed: K-A-2 wrap-around should be invalid'
+
+  # 7. Invalid: Mixed-suit sequence (A♣, K♦, Q♣)
+  hand_mixed_suit = [
+      [1, '♣'],
+      [13, '♦'],
+      [12, '♣'],
+      [9, '♥'],
+      [9, '♦'],
+      [9, '♠'],
+  ]
+  assert check_win(hand_mixed_suit) is False, 'Failed: Mixed-suit sequence'
+
+  # 8. Invalid: Wrong hand size (7 cards before discarding)
+  hand_seven = [
+      [1, '♣'],
+      [13, '♣'],
+      [12, '♣'],
+      [9, '♥'],
+      [9, '♦'],
+      [9, '♠'],
+      [3, '♦'],
+  ]
+  assert check_win(hand_seven) is False, 'Failed: 7-card hand should not win'
+
+  print('✅ All 8 test cases passed!')
+
+
 if __name__ == '__main__':
-  app.run(host='0.0.0.0', port=8080, debug=True)
+  run_tests()
+  app.run(host='0.0.0.0', port=7171, debug=True)
