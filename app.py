@@ -4,7 +4,6 @@ import json
 import random
 import uuid
 from flask import Flask, jsonify, render_template_string, request
-from itertools import combinations
 
 app = Flask(__name__)
 
@@ -147,7 +146,11 @@ def home():
 @app.route('/join', methods=['POST'])
 def join_game():
   ip = get_client_ip()
-  if not game['started'] and ip not in game['players'] and len(game['players']) < 4:
+  if (
+      not game['started']
+      and ip not in game['players']
+      and len(game['players']) < 4
+  ):
     game['players'][ip] = len(game['players'])
     game['log'] = f"Player {len(game['players'])} joined from {ip}!"
   return jsonify({'ok': True})
@@ -168,12 +171,16 @@ def restart_route():
 @app.route('/state')
 def get_state():
   ip = get_client_ip()
-  my_player = game['players'].get(ip, None)  # None if spectator / not joined yet
+  my_player = game['players'].get(
+      ip, None
+  )  # None if spectator / not joined yet
 
   saved_games = 0
   try:
     with open(LOG_FILE, 'r', encoding='utf-8') as f:
-      saved_games = len({json.loads(line)['game_id'] for line in f if line.strip()})
+      saved_games = len(
+          {json.loads(line)['game_id'] for line in f if line.strip()}
+      )
   except FileNotFoundError:
     pass
 
@@ -203,11 +210,19 @@ def draw_card():
   p = game['players'].get(get_client_ip())
   source = request.json['source']
 
-  if not game['started'] or p is None or game['winner'] is not None or game['turn'] != p or game['phase'] != 'DRAW':
+  if (
+      not game['started']
+      or p is None
+      or game['winner'] is not None
+      or game['turn'] != p
+      or game['phase'] != 'DRAW'
+  ):
     return jsonify({'ok': False})
 
   shown_before = list(game['shown'][-1]) if game['shown'] else None
-  hand_before = [list(c) for c in sorted(game['hands'][p], key=lambda c: (c[1], c[0]))]
+  hand_before = [
+      list(c) for c in sorted(game['hands'][p], key=lambda c: (c[1], c[0]))
+  ]
 
   if source == 'S' and game['shown']:
     card = game['shown'].pop()
@@ -233,7 +248,9 @@ def draw_card():
 
   game['hands'][p].append(card)
   game['phase'] = 'DISCARD'
-  game['log'] = f'Player {p+1} picked from {"Shown" if source == "S" else "Hidden Deck"}.'
+  game['log'] = (
+      f'Player {p+1} picked from {"Shown" if source == "S" else "Hidden Deck"}.'
+  )
   return jsonify({'ok': True})
 
 
@@ -242,7 +259,13 @@ def discard_card():
   p = game['players'].get(get_client_ip())
   idx = request.json['index']
 
-  if not game['started'] or p is None or game['winner'] is not None or game['turn'] != p or game['phase'] != 'DISCARD':
+  if (
+      not game['started']
+      or p is None
+      or game['winner'] is not None
+      or game['turn'] != p
+      or game['phase'] != 'DISCARD'
+  ):
     return jsonify({'ok': False})
 
   hand_before = [list(c) for c in game['hands'][p]]
@@ -292,7 +315,7 @@ HTML_PAGE = """
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Family Rummy</title>
   <style>
-    body { font-family: system-ui, sans-serif; text-align: center; background: #1b4d3e; color: white; padding: 20px; }
+    body { font-family: system-ui, sans-serif; text-align: center; background: #1b4d3e; color: white; padding: 20px; padding-top: 50px; }
     .box { background: rgba(0,0,0,0.25); padding: 15px; border-radius: 12px; max-width: 600px; margin: 15px auto; }
     .card { display: inline-block; background: white; color: black; font-size: 24px; font-weight: bold;
             padding: 18px 14px; margin: 6px; border-radius: 10px; cursor: pointer; min-width: 45px;
@@ -303,11 +326,14 @@ HTML_PAGE = """
     button:disabled { opacity: 0.4; cursor: not-allowed; }
     .btn-green { background: #2a9d8f; color: white; }
     .btn-gold { background: #e9c46a; color: black; }
+    .btn-stop { position: fixed; top: 14px; right: 14px; background: #e63946; color: white; font-size: 13px; padding: 8px 14px; }
     .status { font-size: 20px; font-weight: bold; color: #ffd166; margin: 10px 0; }
     .badge { background: #2a9d8f; padding: 4px 10px; border-radius: 20px; font-size: 13px; }
   </style>
 </head>
 <body>
+  <button id="stopGameBtn" class="btn-stop" style="display: none;" onclick="confirmStopGame()">Stop Game</button>
+
   <h2>🃏 Two-Sets-of-3 Card Game <span id="datasetBadge" class="badge">0 games</span></h2>
 
   <!-- LOBBY VIEW (Shown before game starts) -->
@@ -332,7 +358,6 @@ HTML_PAGE = """
         </div>
         <div id="shownCard" class="card" onclick="post('/draw', {source: 'S'})">?</div>
       </div>
-      <button onclick="post('/restart')" style="font-size: 13px; padding: 6px 12px;">Back to Lobby</button>
     </div>
 
     <div class="box">
@@ -358,11 +383,18 @@ HTML_PAGE = """
       refresh();
     }
 
+    function confirmStopGame() {
+      if (confirm("Are you sure you want to stop the game and return everyone to the lobby?")) {
+        post('/restart');
+      }
+    }
+
     async function refresh() {
       const res = await fetch('/state' + queryStr);
       const data = await res.json();
 
       document.getElementById('datasetBadge').innerText = `${data.saved_games} games`;
+      document.getElementById('stopGameBtn').style.display = data.started ? 'inline-block' : 'none';
 
       if (!data.started) {
         // Show Lobby, hide Game Board
@@ -434,6 +466,7 @@ HTML_PAGE = """
 </body>
 </html>
 """
+
 
 # --- TEST SUITE ---
 def run_tests():
