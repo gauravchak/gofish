@@ -47,7 +47,6 @@ def save_trajectory_to_disk(winner_idx):
   total_steps = len(game['trajectory'])
   if total_steps == 0:
     return
-
   with open(LOG_FILE, 'a', encoding='utf-8') as f:
     for i, record in enumerate(game['trajectory']):
       is_winner = (
@@ -62,12 +61,35 @@ def save_trajectory_to_disk(winner_idx):
       f.write(json.dumps(record, ensure_ascii=False) + '\n')
 
 
-def reset_game(num_players=2):
-  deck = [[r, s] for s in SUITS for r in RANKS]  # Stored as [rank, suit] lists for clean JSON
-  random.shuffle(deck)
+def open_lobby():
+  """Resets to a 'Yet to Start' lobby where devices can join."""
   game.clear()
   game.update({
+      'started': False,
+      'players': {},  # Maps IP address -> player index (0, 1, 2, 3)
+      'hands': [],
+      'deck': [],
+      'shown': [],
+      'turn': 0,
+      'step_count': 0,
+      'phase': 'DRAW',
+      'winner': None,
+      'saved': False,
+      'trajectory': [],
+      'log': 'Waiting for players to join...',
+  })
+
+
+def start_match():
+  """Deals cards to everyone currently in the lobby and locks the player list."""
+  num_players = len(game['players'])
+  if num_players < 2 or game['started']:
+    return
+  deck = [[r, s] for s in SUITS for r in RANKS]
+  random.shuffle(deck)
+  game.update({
       'game_id': str(uuid.uuid4())[:8],
+      'started': True,
       'num_players': num_players,
       'deck': deck,
       'hands': [[deck.pop() for _ in range(6)] for _ in range(num_players)],
@@ -78,11 +100,17 @@ def reset_game(num_players=2):
       'winner': None,
       'saved': False,
       'trajectory': [],
-      'log': 'Game started! Player 1 goes first.',
+      'log': f'Game started with {num_players} players! Player 1 goes first.',
   })
 
 
-reset_game(2)
+open_lobby()
+
+
+def get_client_ip():
+  # Allows ?mock_ip=x in URL if you ever want to test 2 tabs on the same laptop
+  return request.args.get('mock_ip') or request.remote_addr
+
 
 # --- 3. WEB API ROUTES ---
 @app.route('/')
@@ -90,13 +118,32 @@ def home():
   return render_template_string(HTML_PAGE)
 
 
+@app.route('/join', methods=['POST'])
+def join_game():
+  ip = get_client_ip()
+  if not game['started'] and ip not in game['players'] and len(game['players']) < 4:
+    game['players'][ip] = len(game['players'])
+    game['log'] = f"Player {len(game['players'])} joined from {ip}!"
+  return jsonify({'ok': True})
+
+
+@app.route('/start', methods=['POST'])
+def start_route():
+  start_match()
+  return jsonify({'ok': True})
+
+
+@app.route('/restart', methods=['POST'])
+def restart_route():
+  open_lobby()
+  return jsonify({'ok': True})
+
+
 @app.route('/state')
 def get_state():
-  p = int(request.args.get('player', 0))
-  hand = sorted(game['hands'][p], key=lambda c: (c[1], c[0]))
-  game['hands'][p] = hand
+  ip = get_client_ip()
+  my_player = game['players'].get(ip, None)  # None if spectator / not joined yet
 
-  # Count how many games we have recorded so far
   saved_games = 0
   try:
     with open(LOG_FILE, 'r', encoding='utf-8') as f:
@@ -104,8 +151,16 @@ def get_state():
   except FileNotFoundError:
     pass
 
+  hand = []
+  if game['started'] and my_player is not None:
+    hand = sorted(game['hands'][my_player], key=lambda c: (c[1], c[0]))
+    game['hands'][my_player] = hand
+
   return jsonify({
-      'num_players': game['num_players'],
+      'started': game['started'],
+      'joined_count': len(game['players']),
+      'my_player': my_player,  # Locked to this IP!
+      'my_ip': ip,
       'hand': [card_label(c) for c in hand],
       'shown': card_label(game['shown'][-1]) if game['shown'] else 'Empty',
       'deck_count': len(game['deck']),
@@ -119,11 +174,10 @@ def get_state():
 
 @app.route('/draw', methods=['POST'])
 def draw_card():
-  data = request.json
-  p = data['player']
-  source = data['source']  # 'T' or 'S'
+  p = game['players'].get(get_client_ip())
+  source = request.json['source']
 
-  if game['winner'] is not None or game['turn'] != p or game['phase'] != 'DRAW':
+  if not game['started'] or p is None or game['winner'] is not None or game['turn'] != p or game['phase'] != 'DRAW':
     return jsonify({'ok': False})
 
   shown_before = list(game['shown'][-1]) if game['shown'] else None
@@ -136,7 +190,6 @@ def draw_card():
   else:
     return jsonify({'ok': False})
 
-  # Record Decision (a): Pick T or S
   game['trajectory'].append({
       'timestamp': datetime.utcnow().isoformat(),
       'game_id': game['game_id'],
@@ -148,7 +201,7 @@ def draw_card():
       'shown_card': shown_before,
       'discard_history': [list(c) for c in game['shown']],
       'deck_remaining': len(game['deck']),
-      'action': source,  # 'T' or 'S'
+      'action': source,
   })
   game['step_count'] += 1
 
@@ -160,21 +213,15 @@ def draw_card():
 
 @app.route('/discard', methods=['POST'])
 def discard_card():
-  data = request.json
-  p = data['player']
-  idx = data['index']
+  p = game['players'].get(get_client_ip())
+  idx = request.json['index']
 
-  if (
-      game['winner'] is not None
-      or game['turn'] != p
-      or game['phase'] != 'DISCARD'
-  ):
+  if not game['started'] or p is None or game['winner'] is not None or game['turn'] != p or game['phase'] != 'DISCARD':
     return jsonify({'ok': False})
 
   hand_before = [list(c) for c in game['hands'][p]]
   card = game['hands'][p].pop(idx)
 
-  # Record Decision (b): Which card to put down
   game['trajectory'].append({
       'timestamp': datetime.utcnow().isoformat(),
       'game_id': game['game_id'],
@@ -182,11 +229,11 @@ def discard_card():
       'step': game['step_count'],
       'player': p,
       'phase': 'DISCARD',
-      'hand': hand_before,  # All 7 cards before discarding
+      'hand': hand_before,
       'shown_card': list(game['shown'][-1]) if game['shown'] else None,
       'discard_history': [list(c) for c in game['shown']],
       'deck_remaining': len(game['deck']),
-      'action': list(card),  # e.g. [7, '♥']
+      'action': list(card),
   })
   game['step_count'] += 1
 
@@ -211,83 +258,122 @@ def discard_card():
   return jsonify({'ok': True})
 
 
-@app.route('/restart', methods=['POST'])
-def restart():
-  num = int(request.json.get('players', 2))
-  reset_game(num)
-  return jsonify({'ok': True})
-
-
 # --- 4. BROWSER UI ---
 HTML_PAGE = """
 <!DOCTYPE html>
 <html>
 <head>
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Family Rummy + Data Collector</title>
+  <title>Family Rummy</title>
   <style>
     body { font-family: system-ui, sans-serif; text-align: center; background: #1b4d3e; color: white; padding: 20px; }
     .box { background: rgba(0,0,0,0.25); padding: 15px; border-radius: 12px; max-width: 600px; margin: 15px auto; }
     .card { display: inline-block; background: white; color: black; font-size: 24px; font-weight: bold;
             padding: 18px 14px; margin: 6px; border-radius: 10px; cursor: pointer; min-width: 45px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.3); transition: transform 0.1s; }
-    .card:hover { transform: translateY(-5px); }
+            box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
     .red { color: #d90429; }
     .deck { background: #2b2d42; color: white; border: 2px solid #8d99ae; }
-    button, select { font-size: 16px; padding: 8px 14px; border-radius: 8px; border: none; cursor: pointer; margin: 4px; }
+    button { font-size: 16px; padding: 10px 18px; border-radius: 8px; border: none; cursor: pointer; margin: 5px; font-weight: bold; }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+    .btn-green { background: #2a9d8f; color: white; }
+    .btn-gold { background: #e9c46a; color: black; }
     .status { font-size: 20px; font-weight: bold; color: #ffd166; margin: 10px 0; }
     .badge { background: #2a9d8f; padding: 4px 10px; border-radius: 20px; font-size: 13px; }
   </style>
 </head>
 <body>
-  <h2>🃏 Two-Sets-of-3 Card Game <span id="datasetBadge" class="badge">0 games recorded</span></h2>
-  
-  <div class="box">
-    I am: 
-    <select id="playerSelect" onchange="refresh()">
-      <option value="0">Player 1</option>
-      <option value="1">Player 2</option>
-      <option value="2">Player 3</option>
-      <option value="3">Player 4</option>
-    </select>
-    | New Game:
-    <button onclick="restart(2)">2 Players</button>
-    <button onclick="restart(3)">3 Players</button>
-    <button onclick="restart(4)">4 Players</button>
+  <h2>🃏 Two-Sets-of-3 Card Game <span id="datasetBadge" class="badge">0 games</span></h2>
+
+  <!-- LOBBY VIEW (Shown before game starts) -->
+  <div id="lobbyBox" class="box">
+    <h3>Game Lobby (Yet to Start)</h3>
+    <p id="lobbyInfo">Players joined: 0 / 4</p>
+    <p id="myIdentity" style="font-size: 18px; color: #ffd166;"></p>
+    <button id="joinBtn" class="btn-green" onclick="post('/join')">Join Game</button>
+    <button id="startBtn" class="btn-gold" onclick="post('/start')" disabled>Start Game (Need 2+)</button>
   </div>
 
-  <div class="box">
-    <div id="log" style="color: #a8dadc;"></div>
-    <div id="status" class="status">Loading...</div>
-    
-    <div style="margin: 20px 0;">
-      <div class="card deck" onclick="draw('T')">
-        Hidden<br><span id="deckCount" style="font-size:14px;"></span>
+  <!-- ACTIVE GAME VIEW (Shown once game starts) -->
+  <div id="gameArea" style="display: none;">
+    <div class="box">
+      <div id="lockedPlayerBadge" style="font-size: 18px; font-weight: bold; margin-bottom: 8px;"></div>
+      <div id="log" style="color: #a8dadc;"></div>
+      <div id="status" class="status"></div>
+
+      <div style="margin: 20px 0;">
+        <div class="card deck" onclick="post('/draw', {source: 'T'})">
+          Hidden<br><span id="deckCount" style="font-size:14px;"></span>
+        </div>
+        <div id="shownCard" class="card" onclick="post('/draw', {source: 'S'})">?</div>
       </div>
-      <div id="shownCard" class="card" onclick="draw('S')">?</div>
+      <button onclick="post('/restart')" style="font-size: 13px; padding: 6px 12px;">Back to Lobby</button>
     </div>
-    <div style="font-size: 13px; opacity: 0.8;">Tap Hidden Deck (T) or Shown Card (S) to draw</div>
-  </div>
 
-  <div class="box">
-    <div>Your Hand (Tap a card to put it down):</div>
-    <div id="hand"></div>
+    <div class="box">
+      <div>Your Hand (Tap a card to put it down):</div>
+      <div id="hand"></div>
+    </div>
   </div>
 
   <script>
+    // Preserve ?mock_ip= if testing multiple tabs on one laptop
+    const queryStr = window.location.search;
+
     function colorClass(label) {
       return (label.includes('♥') || label.includes('♦')) ? 'red' : '';
     }
 
+    async function post(url, body = {}) {
+      await fetch(url + queryStr, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body)
+      });
+      refresh();
+    }
+
     async function refresh() {
-      const p = document.getElementById('playerSelect').value;
-      const res = await fetch('/state?player=' + p);
+      const res = await fetch('/state' + queryStr);
       const data = await res.json();
 
-      document.getElementById('datasetBadge').innerText = `${data.saved_games} games recorded`;
+      document.getElementById('datasetBadge').innerText = `${data.saved_games} games`;
+
+      if (!data.started) {
+        // Show Lobby, hide Game Board
+        document.getElementById('lobbyBox').style.display = 'block';
+        document.getElementById('gameArea').style.display = 'none';
+        document.getElementById('lobbyInfo').innerText = `Players joined: ${data.joined_count} / 4 — ${data.log}`;
+
+        const joinBtn = document.getElementById('joinBtn');
+        const idText = document.getElementById('myIdentity');
+        if (data.my_player !== null) {
+          idText.innerText = `✅ You are assigned: Player ${data.my_player + 1} (${data.my_ip})`;
+          joinBtn.disabled = true;
+          joinBtn.innerText = 'Joined';
+        } else {
+          idText.innerText = `Not joined yet (${data.my_ip})`;
+          joinBtn.disabled = data.joined_count >= 4;
+          joinBtn.innerText = 'Join Game';
+        }
+
+        const startBtn = document.getElementById('startBtn');
+        startBtn.disabled = data.joined_count < 2;
+        startBtn.innerText = data.joined_count >= 2 ? `Start Game (${data.joined_count} Players)` : 'Start Game (Need 2+)';
+        return;
+      }
+
+      // Game has started: hide Lobby, show locked Game Board
+      document.getElementById('lobbyBox').style.display = 'none';
+      document.getElementById('gameArea').style.display = 'block';
+
+      const badge = document.getElementById('lockedPlayerBadge');
+      badge.innerText = data.my_player !== null
+        ? `🔒 Locked as Player ${data.my_player + 1}`
+        : `👀 Spectating (Game already started)`;
+
       document.getElementById('log').innerText = data.log;
       document.getElementById('deckCount').innerText = `(${data.deck_count} left)`;
-      
+
       const shownEl = document.getElementById('shownCard');
       shownEl.innerText = data.shown;
       shownEl.className = 'card ' + colorClass(data.shown);
@@ -297,9 +383,9 @@ HTML_PAGE = """
         statusEl.innerText = "🤝 Draw Game (Deck Empty)";
       } else if (data.winner) {
         statusEl.innerText = `🏆 Player ${data.winner} Wins!`;
-      } else if (data.turn == p) {
-        statusEl.innerText = data.phase === 'DRAW' 
-          ? "👉 YOUR TURN: Pick Hidden or Shown card!" 
+      } else if (data.turn === data.my_player) {
+        statusEl.innerText = data.phase === 'DRAW'
+          ? "👉 YOUR TURN: Pick Hidden or Shown card!"
           : "👉 YOUR TURN: Tap a card in your hand to put down!";
       } else {
         statusEl.innerText = `⏳ Waiting for Player ${data.turn + 1}...`;
@@ -311,35 +397,9 @@ HTML_PAGE = """
         const div = document.createElement('div');
         div.className = 'card ' + colorClass(label);
         div.innerText = label;
-        div.onclick = () => discard(idx);
+        div.onclick = () => post('/discard', {index: idx});
         handEl.appendChild(div);
       });
-    }
-
-    async function draw(source) {
-      const p = parseInt(document.getElementById('playerSelect').value);
-      await fetch('/draw', {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({player: p, source: source})
-      });
-      refresh();
-    }
-
-    async function discard(index) {
-      const p = parseInt(document.getElementById('playerSelect').value);
-      await fetch('/discard', {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({player: p, index: index})
-      });
-      refresh();
-    }
-
-    async function restart(players) {
-      await fetch('/restart', {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({players: players})
-      });
-      refresh();
     }
 
     setInterval(refresh, 1000);
@@ -350,4 +410,4 @@ HTML_PAGE = """
 """
 
 if __name__ == '__main__':
-  app.run(host='0.0.0.0', port=7171, debug=True)
+  app.run(host='0.0.0.0', port=8080, debug=True)
