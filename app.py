@@ -67,6 +67,11 @@ game = {}
 LOG_FILE = 'trajectories.jsonl'
 
 
+def player_name(idx):
+  names = game.get('player_names', [])
+  return names[idx] if 0 <= idx < len(names) else f'Player {idx + 1}'
+
+
 def save_trajectory_to_disk(winner_idx):
   """Backfills the final outcome onto every step and appends to trajectories.jsonl."""
   total_steps = len(game['trajectory'])
@@ -92,6 +97,7 @@ def open_lobby():
   game.update({
       'started': False,
       'players': {},  # Maps IP address -> player index (0, 1, 2, 3)
+      'player_names': [],  # List of player names in join order
       'hands': [],
       'deck': [],
       'shown': [],
@@ -99,6 +105,7 @@ def open_lobby():
       'step_count': 0,
       'phase': 'DRAW',
       'winner': None,
+      'winning_hand': [],
       'saved': False,
       'trajectory': [],
       'log': 'Waiting for players to join...',
@@ -123,9 +130,10 @@ def start_match():
       'step_count': 0,
       'phase': 'DRAW',
       'winner': None,
+      'winning_hand': [],
       'saved': False,
       'trajectory': [],
-      'log': f'Game started with {num_players} players! Player 1 goes first.',
+      'log': f'Game started with {num_players} players! {player_name(0)} goes first.',
   })
 
 
@@ -151,8 +159,12 @@ def join_game():
       and ip not in game['players']
       and len(game['players']) < 4
   ):
-    game['players'][ip] = len(game['players'])
-    game['log'] = f"Player {len(game['players'])} joined from {ip}!"
+    idx = len(game['players'])
+    raw_name = (request.json or {}).get('name', '').strip()
+    name = raw_name if raw_name else f'Player {idx + 1}'
+    game['players'][ip] = idx
+    game['player_names'].append(name)
+    game['log'] = f'{name} joined!'
   return jsonify({'ok': True})
 
 
@@ -192,14 +204,18 @@ def get_state():
   return jsonify({
       'started': game['started'],
       'joined_count': len(game['players']),
+      'player_names': game['player_names'],
       'my_player': my_player,  # Locked to this IP!
+      'my_name': player_name(my_player) if my_player is not None else None,
       'my_ip': ip,
       'hand': [card_label(c) for c in hand],
       'shown': card_label(game['shown'][-1]) if game['shown'] else 'Empty',
       'deck_count': len(game['deck']),
       'turn': game['turn'],
+      'turn_name': player_name(game['turn']) if game['started'] else '',
       'phase': game['phase'],
       'winner': game['winner'],
+      'winning_hand': [card_label(c) for c in game['winning_hand']],
       'log': game['log'],
       'saved_games': saved_games,
   })
@@ -249,7 +265,7 @@ def draw_card():
   game['hands'][p].append(card)
   game['phase'] = 'DISCARD'
   game['log'] = (
-      f'Player {p+1} picked from {"Shown" if source == "S" else "Hidden Deck"}.'
+      f'{player_name(p)} picked from {"Shown" if source == "S" else "Hidden Deck"}.'
   )
   return jsonify({'ok': True})
 
@@ -287,11 +303,12 @@ def discard_card():
   game['step_count'] += 1
 
   game['shown'].append(card)
-  game['log'] = f'Player {p+1} put down {card_label(card)}.'
+  game['log'] = f'{player_name(p)} put down {card_label(card)}.'
 
   if check_win(game['hands'][p]):
-    game['winner'] = p + 1
-    game['log'] = f'🎉 PLAYER {p+1} WINS! (Trajectory saved)'
+    game['winner'] = player_name(p)
+    game['winning_hand'] = sorted(game['hands'][p], key=lambda c: (c[1], c[0]))
+    game['log'] = f'🎉 {player_name(p)} WINS! (Trajectory saved)'
     if not game['saved']:
       save_trajectory_to_disk(winner_idx=p)
       game['saved'] = True
@@ -320,8 +337,10 @@ HTML_PAGE = """
     .card { display: inline-block; background: white; color: black; font-size: 24px; font-weight: bold;
             padding: 18px 14px; margin: 6px; border-radius: 10px; cursor: pointer; min-width: 45px;
             box-shadow: 0 4px 6px rgba(0,0,0,0.3); }
+    .card-sm { font-size: 18px; padding: 10px 9px; margin: 4px; min-width: 32px; cursor: default; }
     .red { color: #d90429; }
     .deck { background: #2b2d42; color: white; border: 2px solid #8d99ae; }
+    input[type="text"] { font-size: 16px; padding: 10px 14px; border-radius: 8px; border: none; margin: 5px; width: 180px; }
     button { font-size: 16px; padding: 10px 18px; border-radius: 8px; border: none; cursor: pointer; margin: 5px; font-weight: bold; }
     button:disabled { opacity: 0.4; cursor: not-allowed; }
     .btn-green { background: #2a9d8f; color: white; }
@@ -340,8 +359,12 @@ HTML_PAGE = """
   <div id="lobbyBox" class="box">
     <h3>Game Lobby (Yet to Start)</h3>
     <p id="lobbyInfo">Players joined: 0 / 4</p>
+    <p id="lobbyPlayers" style="color: #a8dadc; font-weight: bold;"></p>
     <p id="myIdentity" style="font-size: 18px; color: #ffd166;"></p>
-    <button id="joinBtn" class="btn-green" onclick="post('/join')">Join Game</button>
+    <div id="joinControls">
+      <input type="text" id="nameInput" placeholder="Enter your name" maxlength="16">
+      <button id="joinBtn" class="btn-green" onclick="joinWithName()">Join Game</button>
+    </div>
     <button id="startBtn" class="btn-gold" onclick="post('/start')" disabled>Start Game (Need 2+)</button>
   </div>
 
@@ -351,6 +374,10 @@ HTML_PAGE = """
       <div id="lockedPlayerBadge" style="font-size: 18px; font-weight: bold; margin-bottom: 8px;"></div>
       <div id="log" style="color: #a8dadc;"></div>
       <div id="status" class="status"></div>
+      <div id="winningHandBox" style="display: none; margin: 12px 0; padding: 10px; background: rgba(255,255,255,0.12); border-radius: 10px;">
+        <div id="winningHandLabel" style="font-size: 14px; color: #ffd166; margin-bottom: 6px;"></div>
+        <div id="winningHandCards"></div>
+      </div>
 
       <div style="margin: 20px 0;">
         <div class="card deck" onclick="post('/draw', {source: 'T'})">
@@ -406,6 +433,11 @@ HTML_PAGE = """
       refresh();
     }
 
+    function joinWithName() {
+      const name = document.getElementById('nameInput').value.trim();
+      post('/join', {name: name});
+    }
+
     function confirmStopGame() {
       if (confirm("Are you sure you want to stop the game and return everyone to the lobby?")) {
         post('/restart');
@@ -424,17 +456,20 @@ HTML_PAGE = """
         document.getElementById('lobbyBox').style.display = 'block';
         document.getElementById('gameArea').style.display = 'none';
         document.getElementById('lobbyInfo').innerText = `Players joined: ${data.joined_count} / 4 — ${data.log}`;
+        document.getElementById('lobbyPlayers').innerText = data.player_names.length
+          ? `In lobby: ${data.player_names.join(', ')}`
+          : '';
 
+        const joinControls = document.getElementById('joinControls');
         const joinBtn = document.getElementById('joinBtn');
         const idText = document.getElementById('myIdentity');
         if (data.my_player !== null) {
-          idText.innerText = `✅ You are assigned: Player ${data.my_player + 1} (${data.my_ip})`;
-          joinBtn.disabled = true;
-          joinBtn.innerText = 'Joined';
+          idText.innerText = `✅ You joined as: ${data.my_name}`;
+          joinControls.style.display = 'none';
         } else {
           idText.innerText = `Not joined yet (${data.my_ip})`;
+          joinControls.style.display = 'block';
           joinBtn.disabled = data.joined_count >= 4;
-          joinBtn.innerText = 'Join Game';
         }
 
         const startBtn = document.getElementById('startBtn');
@@ -449,7 +484,7 @@ HTML_PAGE = """
 
       const badge = document.getElementById('lockedPlayerBadge');
       badge.innerText = data.my_player !== null
-        ? `🔒 Locked as Player ${data.my_player + 1}`
+        ? `🔒 Playing as ${data.my_name}`
         : `👀 Spectating (Game already started)`;
 
       document.getElementById('log').innerText = data.log;
@@ -460,6 +495,7 @@ HTML_PAGE = """
       shownEl.className = 'card ' + colorClass(data.shown);
 
       const statusEl = document.getElementById('status');
+      const winBox = document.getElementById('winningHandBox');
       const isMyTurn = Boolean(data.started && !data.winner && data.turn === data.my_player);
       if (isMyTurn && !wasMyTurn) {
         notifyMyTurn();
@@ -468,14 +504,28 @@ HTML_PAGE = """
 
       if (data.winner === 'Draw') {
         statusEl.innerText = "🤝 Draw Game (Deck Empty)";
+        winBox.style.display = 'none';
       } else if (data.winner) {
-        statusEl.innerText = `🏆 Player ${data.winner} Wins!`;
-      } else if (data.turn === data.my_player) {
-        statusEl.innerText = data.phase === 'DRAW'
-          ? "👉 YOUR TURN: Pick Hidden or Shown card!"
-          : "👉 YOUR TURN: Tap a card in your hand to put down!";
+        statusEl.innerText = `🏆 ${data.winner} Wins!`;
+        winBox.style.display = 'block';
+        document.getElementById('winningHandLabel').innerText = `${data.winner}'s Winning Hand:`;
+        const winCardsEl = document.getElementById('winningHandCards');
+        winCardsEl.innerHTML = '';
+        data.winning_hand.forEach((label) => {
+          const div = document.createElement('div');
+          div.className = 'card card-sm ' + colorClass(label);
+          div.innerText = label;
+          winCardsEl.appendChild(div);
+        });
       } else {
-        statusEl.innerText = `⏳ Waiting for Player ${data.turn + 1}...`;
+        winBox.style.display = 'none';
+        if (data.turn === data.my_player) {
+          statusEl.innerText = data.phase === 'DRAW'
+            ? "👉 YOUR TURN: Pick Hidden or Shown card!"
+            : "👉 YOUR TURN: Tap a card in your hand to put down!";
+        } else {
+          statusEl.innerText = `⏳ Waiting for ${data.turn_name}...`;
+        }
       }
 
       const handEl = document.getElementById('hand');
