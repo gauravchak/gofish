@@ -369,6 +369,29 @@ HTML_PAGE = """
   <script>
     // Preserve ?mock_ip= if testing multiple tabs on one laptop
     const queryStr = window.location.search;
+    let wasMyTurn = false;
+
+    function notifyMyTurn() {
+      // 1. Physical buzz (works on Android phones/tablets)
+      if (navigator.vibrate) {
+        navigator.vibrate([200, 100, 200]);
+      }
+      // 2. Soft Web Audio chime (works on iPad, Mac, Windows & Android with zero audio files)
+      try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)();
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(587.33, ctx.currentTime); // D5 note
+        osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.15); // A5 note
+        gain.gain.setValueAtTime(0.15, ctx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start();
+        osc.stop(ctx.currentTime + 0.4);
+      } catch (e) {}
+    }
 
     function colorClass(label) {
       return (label.includes('♥') || label.includes('♦')) ? 'red' : '';
@@ -437,6 +460,12 @@ HTML_PAGE = """
       shownEl.className = 'card ' + colorClass(data.shown);
 
       const statusEl = document.getElementById('status');
+      const isMyTurn = Boolean(data.started && !data.winner && data.turn === data.my_player);
+      if (isMyTurn && !wasMyTurn) {
+        notifyMyTurn();
+      }
+      wasMyTurn = isMyTurn;
+
       if (data.winner === 'Draw') {
         statusEl.innerText = "🤝 Draw Game (Deck Empty)";
       } else if (data.winner) {
