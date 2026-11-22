@@ -240,7 +240,7 @@ class GameEngine:
             if self.last_picked_shown
             else None
         ),
-        'public_history': copy.deepcopy(self.public_history),
+        'public_history': list(self.public_history),
         'legal_actions': legal_actions,
         'legal_action_ids': legal_action_ids,
     }

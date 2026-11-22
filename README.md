@@ -79,17 +79,26 @@ gofish/
 │   ├── logger.py           # Saves finished games to trajectories.jsonl (schema v2)
 │   └── family.py           # Local family.json player profiles & Elo rating leaderboard
 ├── bots/
-│   ├── base.py             # Shared BotPolicy interface (used by rules, tree, and future ML!)
+│   ├── base.py             # Shared BotPolicy interface (used by rules, tree, and RL bots!)
 │   ├── novice.py           # Beginner (Very Easy) bot for welcoming first solo games
 │   ├── heuristic.py        # Rules-based (0-ply) hand scorer using all 100 valid 3-card sets
 │   └── tree_bot.py         # 1-level & 2-level Expectimax lookahead tree player
+├── ml/
+│   ├── nn.py               # Tiny zero-dependency 2-layer neural network (pure Python!)
+│   ├── features.py         # Shared 16-feature suit-invariant hand & table encoder
+│   ├── td_value.py         # RL Bot #1: TD(lambda) afterstate Value learning
+│   ├── q_learning.py       # RL Bot #2: DQN-style Q-Learning with target networks
+│   └── policy_gradient.py  # RL Bot #3: Advantage Actor-Critic (A2C) Policy Gradient
+├── models/                 # Trained RL weights (~28 KB total, human-readable JSON!)
 ├── scripts/
-│   └── evaluate.py         # Headless bot-vs-bot arena (win rates, speed, optional self-play)
+│   ├── evaluate.py         # Headless bot-vs-bot arena (win rates, speed, optional self-play)
+│   └── train_rl.py         # 10,000-game progressive Elo RL curriculum trainer
 ├── tests/
 │   ├── test_game.py        # Rules, engine turn flow, and zero-leakage trajectory tests
 │   ├── test_bots.py        # Bot legality, winning-move, and bot-vs-bot trajectory tests
-│   └── test_family.py      # Family profile persistence and Elo math tests
-└── requirements.txt        # Minimal dependencies (just Flask!)
+│   ├── test_family.py      # Family profile persistence and Elo math tests
+│   └── test_rl.py          # Neural net, feature dims, and all 3 RL bots tests
+└── requirements.txt        # Minimal dependencies (still just Flask!)
 ```
 
 ---
@@ -130,9 +139,41 @@ By default, **Auto-Match by Elo** picks the right opponent for your rating: bran
 ```bash
 python3 -m scripts.evaluate --bot-a heuristic --bot-b random --games 60
 python3 -m scripts.evaluate --bot-a tree_1ply --bot-b heuristic --games 60
-python3 -m scripts.evaluate --bot-a tree_2ply --bot-b tree_1ply --games 40
+python3 -m scripts.evaluate --bot-a rl_q_learning --bot-b heuristic --games 60
 ```
 You can even generate bot self-play training data with `--save-trajectories selfplay.jsonl`!
+
+---
+
+## Step 3: The 3 Reinforcement Learning (RL) Players (`ml/`)
+
+All three RL bots are written in **zero-dependency pure Python** (using [ml/nn.py](ml/nn.py), a ~130-line 2-layer neural network with exact backprop—no PyTorch or TensorFlow install needed!) and share the exact same 16 suit-invariant features in [ml/features.py](ml/features.py):
+
+1. **🧠 RL Bot — TD Value ([ml/td_value.py](ml/td_value.py)):**
+   - Learns a **state value function** $V(s) \in (0, 1)$ predicting win probability from any 6-card hand using **TD($\lambda$)** backward returns (just like TD-Gammon!).
+2. **🧠 RL Bot — Q-Learning ([ml/q_learning.py](ml/q_learning.py)):**
+   - Learns explicit **action values** $Q(s, a) \in (-1, 1)$ for every legal `DRAW` and `DISCARD` using Bellman backups + soft-updated target networks (DQN-style). Needs zero draw simulation at play time!
+3. **🧠 RL Bot — Policy Gradient ([ml/policy_gradient.py](ml/policy_gradient.py)):**
+   - **Advantage Actor-Critic (A2C):** an **Actor** outputs probabilities over legal actions via masked softmax, while a **Critic** estimates the pre-action baseline $V(s_t)$ so moves that beat expectations get pushed up.
+
+### Train All 3 RL Bots Yourself (10,000 Progressive Elo Games)
+```bash
+python3 -m scripts.train_rl --games 10000 --save-trajectories selfplay_10k.jsonl
+```
+The curriculum automatically gets harder across 4 stages (Starter/Beginner → Heuristic → Top-Elo Pool → Champions League), saves compact trajectories to gitignored `selfplay_10k.jsonl`, saves trained weights to `models/*.json`, and runs a round-robin tournament across all 8 players:
+
+| Rank | Player | Tournament Elo | Overall Win% |
+|---:|---|---:|---:|
+| 1 | Tree Bot (1-Level) | 1155 | 67.9% |
+| 2 | 🧠 RL Bot — Policy Gradient (A2C) | 1140 | 62.2% |
+| 3 | Heuristic Bot (Easy) | 1120 | 69.9% |
+| 4 | Tree Bot (2-Level) | 1110 | 60.7% |
+| 5 | 🧠 RL Bot — Q-Learning | 1092 | 61.5% |
+| 6 | 🧠 RL Bot — TD Value | 1053 | 57.7% |
+| 7 | Beginner Bot (Very Easy) | 726 | 9.0% |
+| 8 | Random Bot (Starter) | 604 | 1.3% |
+
+All three trained RL bots are already included in `models/` and appear right in the lobby dropdown so your family can play against them immediately!
 
 ---
 
@@ -198,4 +239,4 @@ python3 -m unittest discover -s tests -v
 
 - [x] **Step 1 — Playable Intranet Game & Clean Trajectory Logging:** Split rules/engine/logger from Flask, record leak-free v2 trajectories, add tests and setup guide.
 - [x] **Step 2 — Rules & 1-/2-Level Tree Computer Player:** Add Heuristic, 1-Level Tree, and 2-Level Tree bots, a headless benchmark arena, and solo/mixed lobby play with paced bot turns.
-- [ ] **Step 3 — ML Computer Player:** Train a model from collected `trajectories.jsonl` games and plug it into the exact same `BotPolicy` interface so you can play against the AI you trained together!
+- [x] **Step 3 — ML / RL Computer Players:** Trained three zero-dependency RL bots (TD Value, Q-Learning, and A2C Policy Gradient) via 10,000 progressive Elo self-play games and plugged all three directly into the lobby dropdown and leaderboard!
