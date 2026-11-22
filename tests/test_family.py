@@ -131,6 +131,8 @@ class TestFamilyStoreAndElo(unittest.TestCase):
       self.assertEqual(len(ui['elo_updates']), 2)
       self.assertEqual(ui['elo_updates'][0]['name'], 'Alice')
       self.assertEqual(ui['elo_updates'][0]['delta'], 16.0)
+      self.assertEqual(ui['players'][0]['elo'], 1016.0)
+      self.assertEqual(ui['players'][1]['elo'], 984.0)
 
       # Verify JSON file on disk is valid and matches
       with open(path, 'r', encoding='utf-8') as f:

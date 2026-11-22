@@ -102,8 +102,9 @@ def benchmark(bot_a_key, bot_b_key, games=40, seed=42, save_path=None):
 
 def main():
   parser = argparse.ArgumentParser(description='Benchmark GoFish computer players.')
-  parser.add_argument('--bot-a', default='tree_1ply', choices=['random', 'heuristic', 'tree_1ply', 'tree_2ply'])
-  parser.add_argument('--bot-b', default='heuristic', choices=['random', 'heuristic', 'tree_1ply', 'tree_2ply'])
+  bot_choices = ['random', 'novice', 'heuristic', 'tree_1ply', 'tree_2ply']
+  parser.add_argument('--bot-a', default='tree_1ply', choices=bot_choices)
+  parser.add_argument('--bot-b', default='heuristic', choices=bot_choices)
   parser.add_argument('--games', type=int, default=40)
   parser.add_argument('--seed', type=int, default=42)
   parser.add_argument('--save-trajectories', default=None)

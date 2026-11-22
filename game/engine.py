@@ -81,7 +81,7 @@ class GameEngine:
       return self.players[idx]['type']
     return 'unknown'
 
-  def join_player(self, client_id, name='', player_type='human'):
+  def join_player(self, client_id, name='', player_type='human', initial_elo=None):
     """Adds a human or bot player to the lobby before a match starts."""
     if self.started:
       return {'ok': False, 'error': 'Game already started.'}
@@ -107,7 +107,7 @@ class GameEngine:
 
     if self.family_store is not None and (clean_name or player_type.startswith('bot:')):
       display_name = self.family_store.ensure_player(
-          display_name, player_type=player_type
+          display_name, player_type=player_type, initial_elo=initial_elo
       )
 
     self.players.append({
@@ -502,6 +502,11 @@ class GameEngine:
                 'name': p['name'],
                 'type': p['type'],
                 'is_bot': p['type'].startswith('bot:'),
+                'elo': (
+                    self.family_store.get_elo(p['name'])
+                    if self.family_store is not None
+                    else 1000.0
+                ),
             }
             for p in self.players
         ],

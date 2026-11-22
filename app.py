@@ -6,7 +6,7 @@ import time
 
 from flask import Flask, jsonify, render_template_string, request
 
-from bots import BOT_OPTIONS, create_bot
+from bots import BOT_OPTIONS, BOT_STARTING_ELO, choose_bot_for_elo, create_bot
 from game import FamilyStore, GameEngine, TrajectoryLogger
 
 app = Flask(__name__)
@@ -109,11 +109,27 @@ def schedule_bot_turn_if_needed():
     thread.start()
 
 
+def _resolve_bot_key_locked(bot_key):
+  """Resolves 'auto' to a difficulty matched to the human players' current Elo."""
+  if bot_key != 'auto':
+    return bot_key
+  human_elos = [
+      family_store.get_elo(p['name'])
+      for p in engine.players
+      if not p['type'].startswith('bot:')
+  ]
+  target_elo = (
+      sum(human_elos) / len(human_elos) if human_elos else family_store.initial_elo
+  )
+  return choose_bot_for_elo(target_elo)
+
+
 def _add_bot_locked(bot_key):
   """Creates and joins a computer player. Caller must hold game_lock."""
   global bot_counter
+  resolved_key = _resolve_bot_key_locked(bot_key)
   try:
-    policy = create_bot(bot_key)
+    policy = create_bot(resolved_key)
   except ValueError as err:
     return {'ok': False, 'error': str(err)}
 
@@ -126,11 +142,15 @@ def _add_bot_locked(bot_key):
     display_name = f'{policy.name[:19]} #{bot_counter}'
 
   result = engine.join_player(
-      bot_id, name=display_name, player_type=policy.player_type
+      bot_id,
+      name=display_name,
+      player_type=policy.player_type,
+      initial_elo=BOT_STARTING_ELO.get(policy.player_type),
   )
   if result['ok']:
     bot_policies[bot_id] = policy
     result['bot_id'] = bot_id
+    result['bot_key'] = resolved_key
   return result
 
 
@@ -153,7 +173,7 @@ def join_game():
 
 @app.route('/add_bot', methods=['POST'])
 def add_bot_route():
-  bot_key = get_json_body().get('bot_key', 'tree_1ply')
+  bot_key = get_json_body().get('bot_key', 'auto')
   with game_lock:
     result = _add_bot_locked(bot_key)
   return jsonify(result)
@@ -179,7 +199,7 @@ def quick_play_route():
   raw_name = body.get('name', '')
   if not isinstance(raw_name, str):
     raw_name = ''
-  bot_key = body.get('bot_key', 'tree_1ply')
+  bot_key = body.get('bot_key', 'auto')
 
   with game_lock:
     if engine.started:
@@ -297,6 +317,8 @@ HTML_PAGE = """
     .hint { font-size: 13px; color: #ffd166; margin-top: 6px; min-height: 18px; }
     .roster { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin: 10px 0; }
     .chip { background: rgba(255,255,255,0.14); padding: 6px 12px; border-radius: 20px; font-size: 14px; display: inline-flex; align-items: center; gap: 6px; }
+    .chip-active { border: 2px solid #ffd166; background: rgba(255,209,102,0.22); font-weight: bold; }
+    .chip-elo { color: #ffd166; font-size: 12px; font-weight: 600; }
     .chip-remove { background: rgba(230,57,70,0.85); color: white; border-radius: 50%; width: 20px; height: 20px; padding: 0; margin: 0; font-size: 12px; line-height: 20px; }
     .bot-panel { margin-top: 14px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.18); }
     .moves-list { list-style: none; padding: 0; margin: 8px 0 0 0; font-size: 13px; color: #d8f3dc; text-align: left; max-width: 420px; margin-left: auto; margin-right: auto; }
@@ -359,7 +381,8 @@ HTML_PAGE = """
   <!-- ACTIVE GAME VIEW (Shown once game starts) -->
   <div id="gameArea" style="display: none;">
     <div class="box">
-      <div id="lockedPlayerBadge" style="font-size: 18px; font-weight: bold; margin-bottom: 8px;"></div>
+      <div id="lockedPlayerBadge" style="font-size: 18px; font-weight: bold; margin-bottom: 6px;"></div>
+      <div id="gamePlayersBar" class="roster"></div>
       <div id="log" style="color: #a8dadc;"></div>
       <div id="status" class="status"></div>
       <div id="winningHandBox" style="display: none; margin: 12px 0; padding: 10px; background: rgba(255,255,255,0.12); border-radius: 10px;">
@@ -570,12 +593,12 @@ HTML_PAGE = """
     }
 
     function addBot() {
-      const botKey = document.getElementById('botSelect').value || 'tree_1ply';
+      const botKey = document.getElementById('botSelect').value || 'auto';
       post('/add_bot', {bot_key: botKey});
     }
 
     function quickPlaySolo() {
-      const botKey = document.getElementById('botSelect').value || 'tree_1ply';
+      const botKey = document.getElementById('botSelect').value || 'auto';
       post('/quick_play', {name: getSelectedPlayerName(), bot_key: botKey});
     }
 
@@ -593,7 +616,7 @@ HTML_PAGE = """
         const el = document.createElement('option');
         el.value = opt.key;
         el.innerText = opt.label;
-        if (opt.key === 'tree_1ply') el.selected = true;
+        if (opt.key === 'auto') el.selected = true;
         select.appendChild(el);
       });
       botOptionsLoaded = true;
@@ -620,6 +643,10 @@ HTML_PAGE = """
           const label = document.createElement('span');
           label.innerText = (p.is_bot ? '🤖 ' : '🧑 ') + p.name;
           chip.appendChild(label);
+          const eloTag = document.createElement('span');
+          eloTag.className = 'chip-elo';
+          eloTag.innerText = `(${Math.round(p.elo)})`;
+          chip.appendChild(eloTag);
           if (p.is_bot) {
             const rm = document.createElement('button');
             rm.className = 'chip-remove';
@@ -662,9 +689,27 @@ HTML_PAGE = """
       document.getElementById('gameArea').style.display = 'block';
 
       const badge = document.getElementById('lockedPlayerBadge');
-      badge.innerText = data.my_player !== null
-        ? `🔒 Playing as ${data.my_name}`
+      const mySeat = (data.my_player !== null && data.players) ? data.players[data.my_player] : null;
+      badge.innerText = mySeat
+        ? `🔒 Playing as ${data.my_name} (Elo ${Math.round(mySeat.elo)})`
         : `👀 Spectating (Game already started)`;
+
+      // Show every player and their live Elo rating during the match.
+      const playersBar = document.getElementById('gamePlayersBar');
+      playersBar.innerHTML = '';
+      (data.players || []).forEach((p, idx) => {
+        const chip = document.createElement('span');
+        const isActive = (!data.winner && data.turn === idx);
+        chip.className = 'chip' + (isActive ? ' chip-active' : '');
+        const label = document.createElement('span');
+        label.innerText = (isActive ? '▶ ' : '') + (p.is_bot ? '🤖 ' : '🧑 ') + p.name;
+        chip.appendChild(label);
+        const eloTag = document.createElement('span');
+        eloTag.className = 'chip-elo';
+        eloTag.innerText = `(${Math.round(p.elo)})`;
+        chip.appendChild(eloTag);
+        playersBar.appendChild(chip);
+      });
 
       document.getElementById('log').innerText = data.log;
       document.getElementById('deckCount').innerText = `(${data.deck_count} left)`;

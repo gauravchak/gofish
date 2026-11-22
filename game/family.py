@@ -95,18 +95,26 @@ class FamilyStore:
         return existing_name
     return cleaned
 
-  def ensure_player(self, name, player_type='human', save=True):
+  def get_elo(self, name):
+    """Returns a player's current Elo rating (or initial_elo if not yet saved)."""
+    canonical = self.resolve_name(name)
+    if canonical and canonical in self.data['players']:
+      return round(float(self.data['players'][canonical].get('elo', self.initial_elo)), 1)
+    return round(self.initial_elo, 1)
+
+  def ensure_player(self, name, player_type='human', initial_elo=None, save=True):
     """Finds or creates a player profile and returns its canonical name."""
     canonical = self.resolve_name(name)
     if not canonical:
       return ''
     players = self.data['players']
     now = datetime.now(timezone.utc).isoformat()
+    starting_elo = self.initial_elo if initial_elo is None else float(initial_elo)
     if canonical not in players:
       players[canonical] = {
           'name': canonical,
           'type': player_type,
-          'elo': round(self.initial_elo, 1),
+          'elo': round(starting_elo, 1),
           'games': 0,
           'wins': 0,
           'losses': 0,

@@ -5,7 +5,15 @@ import os
 import tempfile
 import unittest
 
-from bots import BOT_OPTIONS, HeuristicBot, RandomBot, TreeBot, create_bot
+from bots import (
+    BOT_OPTIONS,
+    HeuristicBot,
+    NoviceBot,
+    RandomBot,
+    TreeBot,
+    choose_bot_for_elo,
+    create_bot,
+)
 from bots.heuristic import (
     PAIR_COMPLETER_MASKS,
     VALID_SET_MASKS,
@@ -56,13 +64,22 @@ class TestHeuristicTables(unittest.TestCase):
 
 class TestBotsBehavior(unittest.TestCase):
 
-  def test_registry_creates_all_ui_options(self):
+  def test_registry_creates_all_ui_options_and_auto_match_ladder(self):
     for opt in BOT_OPTIONS:
+      if opt['key'] == 'auto':
+        continue
       bot = create_bot(opt['key'])
       self.assertTrue(bot.player_type.startswith('bot:'))
 
+    # New player (1000 Elo) starts against Very Easy Beginner Bot and levels up.
+    self.assertEqual(choose_bot_for_elo(950), 'novice')
+    self.assertEqual(choose_bot_for_elo(1000), 'novice')
+    self.assertEqual(choose_bot_for_elo(1040), 'heuristic')
+    self.assertEqual(choose_bot_for_elo(1090), 'tree_1ply')
+    self.assertEqual(choose_bot_for_elo(1150), 'tree_2ply')
+
   def test_all_bots_take_immediate_winning_shown_card_and_win(self):
-    for key in ('heuristic', 'tree_1ply', 'tree_2ply'):
+    for key in ('novice', 'heuristic', 'tree_1ply', 'tree_2ply'):
       bot = create_bot(key)
       eng = GameEngine()
       eng.join_player('bot:0', bot.name, player_type=bot.player_type)
@@ -93,7 +110,7 @@ class TestBotsBehavior(unittest.TestCase):
       self.assertEqual(eng.winner_idx, 0)
 
   def test_bots_respect_forbidden_shown_rediscard(self):
-    for key in ('random', 'heuristic', 'tree_1ply', 'tree_2ply'):
+    for key in ('random', 'novice', 'heuristic', 'tree_1ply', 'tree_2ply'):
       bot = create_bot(key)
       eng = GameEngine()
       eng.join_player('bot:0', bot.name, player_type=bot.player_type)
