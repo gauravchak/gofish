@@ -27,11 +27,13 @@ class GameEngine:
   def __init__(
       self,
       logger=None,
+      family_store=None,
       forbid_same_turn_shown_discard=True,
       min_players=2,
       max_players=4,
   ):
     self.logger = logger
+    self.family_store = family_store
     self.forbid_same_turn_shown_discard = forbid_same_turn_shown_discard
     self.min_players = min_players
     self.max_players = max_players
@@ -57,6 +59,7 @@ class GameEngine:
     self.winning_hand = []
     self.winning_sets = []
     self.saved = False
+    self.last_elo_deltas = {}
     self.public_history = []
     self.trajectory = []
     self.recent_moves = []
@@ -78,7 +81,7 @@ class GameEngine:
       return self.players[idx]['type']
     return 'unknown'
 
-  def join_player(self, client_id, name='', player_type='human'):
+  def join_player(self, client_id, name='', player_type='human', initial_elo=None):
     """Adds a human or bot player to the lobby before a match starts."""
     if self.started:
       return {'ok': False, 'error': 'Game already started.'}
@@ -89,7 +92,24 @@ class GameEngine:
 
     idx = len(self.players)
     clean_name = (name or '').strip()[:24]
-    display_name = clean_name if clean_name else f'Player {idx + 1}'
+    if self.family_store is not None and clean_name:
+      display_name = self.family_store.resolve_name(clean_name)
+    else:
+      display_name = clean_name if clean_name else f'Player {idx + 1}'
+
+    if not player_type.startswith('bot:') and any(
+        p['name'].lower() == display_name.lower() for p in self.players
+    ):
+      return {
+          'ok': False,
+          'error': f'{display_name} is already in the lobby.',
+      }
+
+    if self.family_store is not None and (clean_name or player_type.startswith('bot:')):
+      display_name = self.family_store.ensure_player(
+          display_name, player_type=player_type, initial_elo=initial_elo
+      )
+
     self.players.append({
         'id': client_id,
         'name': display_name,
@@ -137,6 +157,7 @@ class GameEngine:
     self.winning_hand = []
     self.winning_sets = []
     self.saved = False
+    self.last_elo_deltas = {}
     self.public_history = []
     self.trajectory = []
     self.recent_moves = []
@@ -396,6 +417,10 @@ class GameEngine:
       self.logger.save_game(
           self.trajectory, winner_idx=winner_idx, winner_type=winner_type
       )
+    if self.family_store is not None:
+      self.last_elo_deltas = self.family_store.record_match(
+          self.game_id, self.players, winner_idx
+      )
     self.saved = True
 
   def clone(self):
@@ -452,6 +477,21 @@ class GameEngine:
           forbidden_discard_idx = idx
           break
 
+    elo_updates = []
+    if self.winner is not None and self.family_store is not None:
+      players_db = self.family_store.data.get('players', {})
+      seen_names = set()
+      for p in self.players:
+        name = p['name']
+        if name in seen_names or name not in self.last_elo_deltas:
+          continue
+        seen_names.add(name)
+        elo_updates.append({
+            'name': name,
+            'elo': players_db.get(name, {}).get('elo', 1000.0),
+            'delta': self.last_elo_deltas[name],
+        })
+
     return {
         'started': self.started,
         'joined_count': len(self.players),
@@ -462,9 +502,25 @@ class GameEngine:
                 'name': p['name'],
                 'type': p['type'],
                 'is_bot': p['type'].startswith('bot:'),
+                'elo': (
+                    self.family_store.get_elo(p['name'])
+                    if self.family_store is not None
+                    else 1000.0
+                ),
             }
             for p in self.players
         ],
+        'saved_human_names': (
+            self.family_store.list_human_names()
+            if self.family_store is not None
+            else []
+        ),
+        'leaderboard': (
+            self.family_store.leaderboard()
+            if self.family_store is not None
+            else []
+        ),
+        'elo_updates': elo_updates,
         'my_player': my_player,
         'my_name': self.player_name(my_player) if my_player is not None else None,
         'my_ip': client_id,

@@ -61,16 +61,19 @@ gofish/
 ├── game/
 │   ├── rules.py            # Pure card math: 0..51 card IDs, valid sets, win checking
 │   ├── engine.py           # Headless game state machine (used by humans, bots, and tests)
-│   └── logger.py           # Saves finished games to trajectories.jsonl (schema v2)
+│   ├── logger.py           # Saves finished games to trajectories.jsonl (schema v2)
+│   └── family.py           # Local family.json player profiles & Elo rating leaderboard
 ├── bots/
 │   ├── base.py             # Shared BotPolicy interface (used by rules, tree, and future ML!)
+│   ├── novice.py           # Beginner (Very Easy) bot for welcoming first solo games
 │   ├── heuristic.py        # Rules-based (0-ply) hand scorer using all 100 valid 3-card sets
 │   └── tree_bot.py         # 1-level & 2-level Expectimax lookahead tree player
 ├── scripts/
 │   └── evaluate.py         # Headless bot-vs-bot arena (win rates, speed, optional self-play)
 ├── tests/
 │   ├── test_game.py        # Rules, engine turn flow, and zero-leakage trajectory tests
-│   └── test_bots.py        # Bot legality, winning-move, and bot-vs-bot trajectory tests
+│   ├── test_bots.py        # Bot legality, winning-move, and bot-vs-bot trajectory tests
+│   └── test_family.py      # Family profile persistence and Elo math tests
 └── requirements.txt        # Minimal dependencies (just Flask!)
 ```
 
@@ -80,12 +83,17 @@ gofish/
 
 All computer players implement the exact same two methods in [bots/base.py](bots/base.py): `choose_draw(obs)` and `choose_discard(obs)`. Later, our **ML player** will plug into the exact same interface!
 
-1. **Heuristic Bot — Easy ([bots/heuristic.py](bots/heuristic.py)):**
+By default, **Auto-Match by Elo** picks the right opponent for your rating: brand-new players (1000 Elo) start against the **Beginner Bot (Very Easy)** for an enjoyable first-time win chance, and automatically level up as their Elo climbs (`< 1025` → Beginner, `< 1075` → Heuristic, `< 1135` → 1-Level Tree, `1135+` → 2-Level Tree).
+
+1. **Beginner Bot — Very Easy ([bots/novice.py](bots/novice.py)):**
+   - Plays like someone just learning the game: always grabs an obvious winning card and protects complete sets, but makes casual mistakes and doesn't count buried discards.
+
+2. **Heuristic Bot — Easy ([bots/heuristic.py](bots/heuristic.py)):**
    - There are only **100 valid 3-card sets** in a 52-card deck (52 three-of-a-kinds + 48 suited runs).
    - It splits its 6 cards into two groups of 3 (only 10 ways!) and counts how many **live unseen cards** can finish each group—subtracting dead cards already buried in the discard pile.
    - It also watches what the next player picked from `Shown` so it avoids feeding them helpful cards.
 
-2. **1-Level Tree Bot — Medium ([bots/tree_bot.py](bots/tree_bot.py)):**
+3. **1-Level Tree Bot — Medium ([bots/tree_bot.py](bots/tree_bot.py)):**
    - Uses a **1-level Expectimax tree** to think one turn ahead:
      ```text
              [My Choice: Pick Shown ('S') or Hidden ('T')?]
@@ -97,7 +105,7 @@ All computer players implement the exact same two methods in [bots/base.py](bots
      ```
    - On `DISCARD`, it checks every legal discard and averages how strong its hand will be after next turn's random draw.
 
-3. **2-Level Tree Bot — Hard ([bots/tree_bot.py](bots/tree_bot.py)):**
+4. **2-Level Tree Bot — Hard ([bots/tree_bot.py](bots/tree_bot.py)):**
    - Takes the top candidate moves from Level 1 and looks a **second turn ahead** (`Draw 1 → Discard 1 → Draw 2 → Discard 2`), discounting future turns slightly (`gamma = 0.85`) so winning sooner is always preferred.
 
 ### Pit Bots Against Each Other (No Browser Needed!)
@@ -107,6 +115,15 @@ python3 -m scripts.evaluate --bot-a tree_1ply --bot-b heuristic --games 60
 python3 -m scripts.evaluate --bot-a tree_2ply --bot-b tree_1ply --games 40
 ```
 You can even generate bot self-play training data with `--save-trajectories selfplay.jsonl`!
+
+---
+
+## Local Family Profiles & Elo Leaderboard (`family.json`)
+
+When players join, their name is saved to a local **`family.json`** file (listed in `.gitignore` so personal family names and stats are **never pushed to GitHub**):
+- **Quick lobby picker:** Pick a saved family member from the dropdown, or select **`+ New player...`** to type a new name.
+- **Automatic Elo ratings (humans + bots!):** Everyone starts at **1000 Elo** (`K = 32`). Beating a higher-rated player (or a harder computer player!) earns more points, and total Elo across all players in a match is conserved (zero-sum) for 2-, 3-, and 4-player games.
+- **Live leaderboard:** See everyone's Elo and `W-L-D` record in the lobby—great for tracking whether your family can out-rate the 2-Level Tree Bot (and later, the ML Bot!).
 
 ---
 
