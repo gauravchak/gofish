@@ -59,6 +59,7 @@ class GameEngine:
     self.saved = False
     self.public_history = []
     self.trajectory = []
+    self.recent_moves = []
     self.log = 'Waiting for players to join...'
 
   def get_player_index(self, client_id):
@@ -87,7 +88,7 @@ class GameEngine:
       return {'ok': False, 'error': 'Lobby is full.'}
 
     idx = len(self.players)
-    clean_name = (name or '').strip()[:16]
+    clean_name = (name or '').strip()[:24]
     display_name = clean_name if clean_name else f'Player {idx + 1}'
     self.players.append({
         'id': client_id,
@@ -96,6 +97,17 @@ class GameEngine:
     })
     self.log = f'{display_name} joined!'
     return {'ok': True, 'player_idx': idx}
+
+  def remove_player(self, client_id):
+    """Removes a player from the lobby before a match starts."""
+    if self.started:
+      return {'ok': False, 'error': 'Cannot remove players after game starts.'}
+    idx = self.get_player_index(client_id)
+    if idx is None:
+      return {'ok': False, 'error': 'Player not found in lobby.'}
+    removed = self.players.pop(idx)
+    self.log = f"{removed['name']} left the lobby."
+    return {'ok': True}
 
   def start_match(self, seed=None):
     """Deals cards to everyone currently in the lobby and locks the roster."""
@@ -127,6 +139,7 @@ class GameEngine:
     self.saved = False
     self.public_history = []
     self.trajectory = []
+    self.recent_moves = []
     self.log = (
         f'Game started with {self.num_players} players! '
         f'{self.player_name(0)} goes first.'
@@ -273,7 +286,9 @@ class GameEngine:
     source_label = (
         f'Shown ({card_label(card)})' if source == 'S' else 'Hidden Deck'
     )
-    self.log = f'{self.player_name(player_idx)} picked from {source_label}.'
+    move_text = f'{self.player_name(player_idx)} picked from {source_label}.'
+    self.log = move_text
+    self.recent_moves = (self.recent_moves + [move_text])[-6:]
     return {'ok': True, 'card': list(card)}
 
   def _resolve_discard_index(self, player_idx, card_or_index, by_index):
@@ -348,7 +363,9 @@ class GameEngine:
     self.shown.append(card)
     self.last_picked_shown = None
     self.last_drawn_card = None
-    self.log = f'{self.player_name(player_idx)} put down {card_label(card)}.'
+    move_text = f'{self.player_name(player_idx)} put down {card_label(card)}.'
+    self.log = move_text
+    self.recent_moves = (self.recent_moves + [move_text])[-6:]
 
     win_sets = find_winning_sets(self.hands[player_idx])
     if win_sets is not None:
@@ -439,6 +456,15 @@ class GameEngine:
         'started': self.started,
         'joined_count': len(self.players),
         'player_names': [p['name'] for p in self.players],
+        'players': [
+            {
+                'id': p['id'],
+                'name': p['name'],
+                'type': p['type'],
+                'is_bot': p['type'].startswith('bot:'),
+            }
+            for p in self.players
+        ],
         'my_player': my_player,
         'my_name': self.player_name(my_player) if my_player is not None else None,
         'my_ip': client_id,
@@ -455,5 +481,6 @@ class GameEngine:
             [card_label(c) for c in s] for s in self.winning_sets
         ],
         'log': self.log,
+        'recent_moves': list(self.recent_moves),
         'saved_games': self.logger.saved_games if self.logger is not None else 0,
     }

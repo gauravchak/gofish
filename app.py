@@ -1,26 +1,135 @@
-"""Flask web server for Two-Sets-of-3 (6-card Family Rummy)."""
+"""Flask web server for Two-Sets-of-3 (6-card Family Rummy) with Computer Players."""
 
+import os
 import threading
+import time
 
 from flask import Flask, jsonify, render_template_string, request
 
+from bots import BOT_OPTIONS, create_bot
 from game import GameEngine, TrajectoryLogger
 
 app = Flask(__name__)
 
 LOG_FILE = 'trajectories.jsonl'
+BOT_STEP_DELAY_SECONDS = 0.65
+
 game_lock = threading.Lock()
 trajectory_logger = TrajectoryLogger(LOG_FILE)
 engine = GameEngine(logger=trajectory_logger)
 
+# Maps synthetic bot IDs (e.g., 'bot:1') -> BotPolicy instance.
+bot_policies = {}
+bot_counter = 0
+bot_worker_running = False
+
 
 def get_client_ip():
-  # Allows ?mock_ip=x in URL when testing multiple tabs on one laptop
-  return request.args.get('mock_ip') or request.remote_addr
+  # Allow ?mock_ip=x only from localhost so you can test multiple tabs on one
+  # laptop without letting devices on the LAN spoof another player's IP.
+  if request.remote_addr in ('127.0.0.1', '::1'):
+    mock_ip = request.args.get('mock_ip')
+    if mock_ip:
+      return mock_ip
+  return request.remote_addr
 
 
 def get_json_body():
   return request.get_json(silent=True) or {}
+
+
+def _bot_turn_loop():
+  """Background worker that plays computer turns one paced step at a time."""
+  global bot_worker_running
+  try:
+    while True:
+      with game_lock:
+        if not engine.started or engine.winner is not None:
+          return
+        current_idx = engine.turn
+        current_player = engine.players[current_idx]
+        policy = bot_policies.get(current_player['id'])
+        if policy is None:
+          return
+
+        expected_game_id = engine.game_id
+        expected_step = engine.step_count
+        phase = engine.phase
+        obs = engine.get_observation(current_idx)
+
+      # Pause briefly and compute the bot's decision outside game_lock so the UI
+      # stays responsive and humans can clearly see each DRAW and DISCARD step.
+      t0 = time.monotonic()
+      action = (
+          policy.choose_draw(obs)
+          if phase == 'DRAW'
+          else policy.choose_discard(obs)
+      )
+      remaining_delay = BOT_STEP_DELAY_SECONDS - (time.monotonic() - t0)
+      if remaining_delay > 0:
+        time.sleep(remaining_delay)
+
+      with game_lock:
+        # Guard against a reset/rematch happening while the bot was thinking.
+        if (
+            not engine.started
+            or engine.winner is not None
+            or engine.game_id != expected_game_id
+            or engine.step_count != expected_step
+        ):
+          return
+
+        if phase == 'DRAW':
+          engine.draw(current_idx, action)
+        else:
+          engine.discard(current_idx, action, by_index=False)
+  finally:
+    with game_lock:
+      bot_worker_running = False
+
+
+def schedule_bot_turn_if_needed():
+  """Starts the background bot worker if it is currently a computer player's turn."""
+  global bot_worker_running
+  with game_lock:
+    if (
+        bot_worker_running
+        or not engine.started
+        or engine.winner is not None
+        or not engine.players
+    ):
+      return
+    current_id = engine.players[engine.turn]['id']
+    if current_id not in bot_policies:
+      return
+    bot_worker_running = True
+    thread = threading.Thread(target=_bot_turn_loop, daemon=True)
+    thread.start()
+
+
+def _add_bot_locked(bot_key):
+  """Creates and joins a computer player. Caller must hold game_lock."""
+  global bot_counter
+  try:
+    policy = create_bot(bot_key)
+  except ValueError as err:
+    return {'ok': False, 'error': str(err)}
+
+  bot_counter += 1
+  bot_id = f'bot:{bot_counter}'
+  # Give a clean short seat name (e.g., 'Tree Bot (1-Level)' or 'Tree Bot #2').
+  existing_names = {p['name'] for p in engine.players}
+  display_name = policy.name
+  if display_name in existing_names:
+    display_name = f'{policy.name[:19]} #{bot_counter}'
+
+  result = engine.join_player(
+      bot_id, name=display_name, player_type=policy.player_type
+  )
+  if result['ok']:
+    bot_policies[bot_id] = policy
+    result['bot_id'] = bot_id
+  return result
 
 
 # --- WEB API ROUTES ---
@@ -32,8 +141,7 @@ def home():
 @app.route('/join', methods=['POST'])
 def join_game():
   ip = get_client_ip()
-  body = get_json_body()
-  raw_name = body.get('name', '')
+  raw_name = get_json_body().get('name', '')
   if not isinstance(raw_name, str):
     raw_name = ''
   with game_lock:
@@ -41,10 +149,60 @@ def join_game():
   return jsonify(result)
 
 
+@app.route('/add_bot', methods=['POST'])
+def add_bot_route():
+  bot_key = get_json_body().get('bot_key', 'tree_1ply')
+  with game_lock:
+    result = _add_bot_locked(bot_key)
+  return jsonify(result)
+
+
+@app.route('/remove_bot', methods=['POST'])
+def remove_bot_route():
+  bot_id = get_json_body().get('bot_id', '')
+  with game_lock:
+    if bot_id not in bot_policies:
+      return jsonify({'ok': False, 'error': 'Bot not found.'})
+    result = engine.remove_player(bot_id)
+    if result['ok']:
+      bot_policies.pop(bot_id, None)
+  return jsonify(result)
+
+
+@app.route('/quick_play', methods=['POST'])
+def quick_play_route():
+  """One-click solo mode: joins you, adds the chosen computer player, and starts."""
+  ip = get_client_ip()
+  body = get_json_body()
+  raw_name = body.get('name', '')
+  if not isinstance(raw_name, str):
+    raw_name = ''
+  bot_key = body.get('bot_key', 'tree_1ply')
+
+  with game_lock:
+    if engine.started:
+      return jsonify({'ok': False, 'error': 'Game already started.'})
+    if engine.get_player_index(ip) is None:
+      join_res = engine.join_player(ip, name=raw_name, player_type='human')
+      if not join_res['ok']:
+        return jsonify(join_res)
+    if len(engine.players) < 2:
+      bot_res = _add_bot_locked(bot_key)
+      if not bot_res['ok']:
+        return jsonify(bot_res)
+    ok = engine.start_match()
+
+  if ok:
+    schedule_bot_turn_if_needed()
+  return jsonify({'ok': ok})
+
+
 @app.route('/start', methods=['POST'])
 def start_route():
   with game_lock:
     ok = engine.start_match()
+  if ok:
+    schedule_bot_turn_if_needed()
   return jsonify({'ok': ok})
 
 
@@ -52,6 +210,8 @@ def start_route():
 def rematch_route():
   with game_lock:
     ok = engine.rematch()
+  if ok:
+    schedule_bot_turn_if_needed()
   return jsonify({'ok': ok})
 
 
@@ -59,6 +219,7 @@ def rematch_route():
 def restart_route():
   with game_lock:
     engine.reset_lobby()
+    bot_policies.clear()
   return jsonify({'ok': True})
 
 
@@ -67,6 +228,7 @@ def get_state():
   ip = get_client_ip()
   with game_lock:
     state = engine.get_ui_state(ip)
+    state['bot_options'] = list(BOT_OPTIONS)
   return jsonify(state)
 
 
@@ -97,6 +259,8 @@ def discard_card():
   with game_lock:
     p = engine.get_player_index(ip)
     result = engine.discard(p, idx, by_index=True)
+  if result.get('ok'):
+    schedule_bot_turn_if_needed()
   return jsonify(result)
 
 
@@ -109,7 +273,7 @@ HTML_PAGE = """
   <title>Family Rummy</title>
   <style>
     body { font-family: system-ui, sans-serif; text-align: center; background: #1b4d3e; color: white; padding: 20px; padding-top: 50px; }
-    .box { background: rgba(0,0,0,0.25); padding: 15px; border-radius: 12px; max-width: 600px; margin: 15px auto; }
+    .box { background: rgba(0,0,0,0.25); padding: 15px; border-radius: 12px; max-width: 620px; margin: 15px auto; }
     .card { display: inline-block; background: white; color: black; font-size: 24px; font-weight: bold;
             padding: 18px 14px; margin: 6px; border-radius: 10px; cursor: pointer; min-width: 45px;
             box-shadow: 0 4px 6px rgba(0,0,0,0.3); user-select: none; }
@@ -118,15 +282,23 @@ HTML_PAGE = """
     .red { color: #d90429; }
     .deck { background: #2b2d42; color: white; border: 2px solid #8d99ae; }
     .set-sep { display: inline-block; width: 18px; }
-    input[type="text"] { font-size: 16px; padding: 10px 14px; border-radius: 8px; border: none; margin: 5px; width: 180px; }
-    button { font-size: 16px; padding: 10px 18px; border-radius: 8px; border: none; cursor: pointer; margin: 5px; font-weight: bold; }
+    input[type="text"], select { font-size: 15px; padding: 10px 12px; border-radius: 8px; border: none; margin: 5px; }
+    input[type="text"] { width: 180px; }
+    button { font-size: 15px; padding: 10px 16px; border-radius: 8px; border: none; cursor: pointer; margin: 5px; font-weight: bold; }
     button:disabled { opacity: 0.4; cursor: not-allowed; }
     .btn-green { background: #2a9d8f; color: white; }
     .btn-gold { background: #e9c46a; color: black; }
+    .btn-blue { background: #457b9d; color: white; }
     .btn-stop { position: fixed; top: 14px; right: 14px; background: #e63946; color: white; font-size: 13px; padding: 8px 14px; }
     .status { font-size: 20px; font-weight: bold; color: #ffd166; margin: 10px 0; }
     .badge { background: #2a9d8f; padding: 4px 10px; border-radius: 20px; font-size: 13px; }
     .hint { font-size: 13px; color: #ffd166; margin-top: 6px; min-height: 18px; }
+    .roster { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin: 10px 0; }
+    .chip { background: rgba(255,255,255,0.14); padding: 6px 12px; border-radius: 20px; font-size: 14px; display: inline-flex; align-items: center; gap: 6px; }
+    .chip-remove { background: rgba(230,57,70,0.85); color: white; border-radius: 50%; width: 20px; height: 20px; padding: 0; margin: 0; font-size: 12px; line-height: 20px; }
+    .bot-panel { margin-top: 14px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.18); }
+    .moves-list { list-style: none; padding: 0; margin: 8px 0 0 0; font-size: 13px; color: #d8f3dc; text-align: left; max-width: 420px; margin-left: auto; margin-right: auto; }
+    .moves-list li { padding: 3px 0; border-bottom: 1px solid rgba(255,255,255,0.08); }
   </style>
 </head>
 <body>
@@ -138,13 +310,23 @@ HTML_PAGE = """
   <div id="lobbyBox" class="box">
     <h3>Game Lobby (Yet to Start)</h3>
     <p id="lobbyInfo">Players joined: 0 / 4</p>
-    <p id="lobbyPlayers" style="color: #a8dadc; font-weight: bold;"></p>
+    <div id="lobbyRoster" class="roster"></div>
     <p id="myIdentity" style="font-size: 18px; color: #ffd166;"></p>
     <div id="joinControls">
-      <input type="text" id="nameInput" placeholder="Enter your name" maxlength="16">
+      <input type="text" id="nameInput" placeholder="Enter your name" maxlength="20">
       <button id="joinBtn" class="btn-green" onclick="joinWithName()">Join Game</button>
     </div>
-    <button id="startBtn" class="btn-gold" onclick="post('/start')" disabled>Start Game (Need 2+)</button>
+
+    <div class="bot-panel">
+      <div style="font-size: 14px; color: #a8dadc; margin-bottom: 6px;">🤖 Play with a Computer Player</div>
+      <select id="botSelect"></select>
+      <button id="addBotBtn" class="btn-blue" onclick="addBot()">+ Add Computer</button>
+      <button id="quickPlayBtn" class="btn-gold" onclick="quickPlaySolo()">Quick Play Solo</button>
+    </div>
+
+    <div style="margin-top: 12px;">
+      <button id="startBtn" class="btn-gold" onclick="post('/start')" disabled>Start Game (Need 2+)</button>
+    </div>
   </div>
 
   <!-- ACTIVE GAME VIEW (Shown once game starts) -->
@@ -174,13 +356,18 @@ HTML_PAGE = """
       <div id="hand"></div>
       <div id="actionHint" class="hint"></div>
     </div>
+
+    <div class="box" id="recentMovesBox" style="display: none;">
+      <div style="font-size: 13px; color: #a8dadc; font-weight: bold;">Recent Moves</div>
+      <ul id="recentMovesList" class="moves-list"></ul>
+    </div>
   </div>
 
   <script>
-    // Preserve ?mock_ip= if testing multiple tabs on one laptop
     const queryStr = window.location.search;
     let wasMyTurn = false;
     let isSubmitting = false;
+    let botOptionsLoaded = false;
 
     function notifyMyTurn() {
       if (navigator.vibrate) {
@@ -231,16 +418,42 @@ HTML_PAGE = """
       post('/join', {name: name});
     }
 
+    function addBot() {
+      const botKey = document.getElementById('botSelect').value || 'tree_1ply';
+      post('/add_bot', {bot_key: botKey});
+    }
+
+    function quickPlaySolo() {
+      const name = document.getElementById('nameInput').value.trim();
+      const botKey = document.getElementById('botSelect').value || 'tree_1ply';
+      post('/quick_play', {name: name, bot_key: botKey});
+    }
+
     function confirmStopGame() {
       if (confirm("Are you sure you want to stop the game and return everyone to the lobby?")) {
         post('/restart');
       }
     }
 
+    function populateBotOptions(options) {
+      if (botOptionsLoaded || !options || !options.length) return;
+      const select = document.getElementById('botSelect');
+      select.innerHTML = '';
+      options.forEach((opt) => {
+        const el = document.createElement('option');
+        el.value = opt.key;
+        el.innerText = opt.label;
+        if (opt.key === 'tree_1ply') el.selected = true;
+        select.appendChild(el);
+      });
+      botOptionsLoaded = true;
+    }
+
     async function refresh() {
       const res = await fetch('/state' + queryStr);
       const data = await res.json();
 
+      populateBotOptions(data.bot_options);
       document.getElementById('datasetBadge').innerText = `${data.saved_games} games`;
       document.getElementById('stopGameBtn').style.display = data.started ? 'inline-block' : 'none';
 
@@ -248,9 +461,25 @@ HTML_PAGE = """
         document.getElementById('lobbyBox').style.display = 'block';
         document.getElementById('gameArea').style.display = 'none';
         document.getElementById('lobbyInfo').innerText = `Players joined: ${data.joined_count} / 4 — ${data.log}`;
-        document.getElementById('lobbyPlayers').innerText = data.player_names.length
-          ? `In lobby: ${data.player_names.join(', ')}`
-          : '';
+
+        const rosterEl = document.getElementById('lobbyRoster');
+        rosterEl.innerHTML = '';
+        (data.players || []).forEach((p) => {
+          const chip = document.createElement('span');
+          chip.className = 'chip';
+          const label = document.createElement('span');
+          label.innerText = (p.is_bot ? '🤖 ' : '🧑 ') + p.name;
+          chip.appendChild(label);
+          if (p.is_bot) {
+            const rm = document.createElement('button');
+            rm.className = 'chip-remove';
+            rm.innerText = '×';
+            rm.title = 'Remove computer player';
+            rm.onclick = () => post('/remove_bot', {bot_id: p.id});
+            chip.appendChild(rm);
+          }
+          rosterEl.appendChild(chip);
+        });
 
         const joinControls = document.getElementById('joinControls');
         const joinBtn = document.getElementById('joinBtn');
@@ -263,6 +492,11 @@ HTML_PAGE = """
           joinControls.style.display = 'block';
           joinBtn.disabled = data.joined_count >= 4;
         }
+
+        document.getElementById('addBotBtn').disabled = data.joined_count >= 4;
+        document.getElementById('quickPlayBtn').style.display =
+          (data.joined_count === 0 || (data.joined_count === 1 && data.my_player !== null))
+            ? 'inline-block' : 'none';
 
         const startBtn = document.getElementById('startBtn');
         startBtn.disabled = data.joined_count < 2;
@@ -357,9 +591,24 @@ HTML_PAGE = """
         };
         handEl.appendChild(div);
       });
+
+      const moves = data.recent_moves || [];
+      const movesBox = document.getElementById('recentMovesBox');
+      const movesList = document.getElementById('recentMovesList');
+      if (moves.length > 0) {
+        movesBox.style.display = 'block';
+        movesList.innerHTML = '';
+        moves.slice().reverse().forEach((entry) => {
+          const li = document.createElement('li');
+          li.innerText = entry;
+          movesList.appendChild(li);
+        });
+      } else {
+        movesBox.style.display = 'none';
+      }
     }
 
-    setInterval(refresh, 1000);
+    setInterval(refresh, 750);
     refresh();
   </script>
 </body>
@@ -368,4 +617,8 @@ HTML_PAGE = """
 
 
 if __name__ == '__main__':
-  app.run(host='0.0.0.0', port=7171, debug=True)
+  # Never combine Flask's interactive debugger with host='0.0.0.0' on a LAN.
+  # Set FLASK_DEBUG=1 only for local single-machine development (binds to 127.0.0.1).
+  debug_mode = os.environ.get('FLASK_DEBUG') == '1'
+  host = '127.0.0.1' if debug_mode else '0.0.0.0'
+  app.run(host=host, port=7171, debug=debug_mode)
