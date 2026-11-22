@@ -24,9 +24,9 @@ class BotPolicy:
 
 
 class RandomBot(BotPolicy):
-  """Picks uniformly at random among legal moves (useful baseline for benchmarks)."""
+  """Picks uniformly at random among legal moves (starter opponent & benchmark baseline)."""
 
-  name = 'Random Bot'
+  name = 'Random Bot (Starter)'
   player_type = 'bot:random'
 
   def __init__(self, seed=None):

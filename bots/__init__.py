@@ -7,6 +7,7 @@ from bots.tree_bot import TreeBot
 
 BOT_OPTIONS = (
     {'key': 'auto', 'label': 'Auto-Match by Elo (Recommended)'},
+    {'key': 'random', 'label': 'Random Bot (Starter)'},
     {'key': 'novice', 'label': 'Beginner Bot (Very Easy)'},
     {'key': 'heuristic', 'label': 'Heuristic Bot (Easy)'},
     {'key': 'tree_1ply', 'label': 'Tree Bot — 1-Level (Medium)'},
@@ -23,12 +24,13 @@ BOT_STARTING_ELO = {
     'bot:tree_2ply': 1140.0,
 }
 
-# Elo thresholds for Auto-Match: brand-new players (1000 Elo) start against the
-# Very Easy Beginner Bot and automatically level up as their Elo climbs!
+# Elo thresholds for Auto-Match: brand-new players (1000 Elo) start with a warm-up
+# game against Random Bot (1 win -> ~1008 Elo graduates to Beginner Bot!).
 AUTO_MATCH_TIERS = (
-    (1025.0, 'novice'),
-    (1075.0, 'heuristic'),
-    (1135.0, 'tree_1ply'),
+    (1007.0, 'random'),
+    (1035.0, 'novice'),
+    (1085.0, 'heuristic'),
+    (1140.0, 'tree_1ply'),
 )
 
 
