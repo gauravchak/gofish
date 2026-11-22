@@ -20,6 +20,8 @@ import os
 import random
 import time
 
+import torch
+
 from bots import BOT_STARTING_ELO, RL_MODEL_PATHS, create_bot
 from bots.heuristic import get_next_player_hints, get_unseen_mask
 from game import GameEngine, TrajectoryLogger, card_to_id, expected_score
@@ -240,14 +242,16 @@ def run_eval_tournament(pool, keys, games_per_pair=30, seed=90000):
 
 
 def train_all(total_games=10000, save_trajectories=None, seed=42):
-  """Runs the 4-stage progressive curriculum for all three RL models."""
+  """Runs the 4-stage progressive curriculum for all three PyTorch RL models."""
+  # For tiny per-move MLPs on CPU, 1 thread avoids thread-sync overhead (3-5x faster!).
+  torch.set_num_threads(1)
   rng = random.Random(seed)
   t_start = time.time()
 
-  # Fresh RL learners initialized from scratch!
-  td_bot = TDValueBot(hidden_dim=12, seed=seed + 1)
-  q_bot = QLearningBot(hidden_dim=12, seed=seed + 2)
-  pg_bot = PolicyGradientBot(hidden_dim=12, seed=seed + 3)
+  # Fresh PyTorch RL learners initialized from scratch!
+  td_bot = TDValueBot(hidden_dim=32, seed=seed + 1)
+  q_bot = QLearningBot(hidden_dim=32, seed=seed + 2)
+  pg_bot = PolicyGradientBot(hidden_dim=32, seed=seed + 3)
 
   pool = {
       'random': create_bot('random'),
@@ -283,14 +287,15 @@ def train_all(total_games=10000, save_trajectories=None, seed=42):
 
   for game_num in range(1, total_games + 1):
     progress = game_num / total_games
+    # Adam learning-rate schedule across the 4 progressive curriculum stages.
     if progress <= 0.20:
-      stage, eps, temp, lr, actor_lr = 1, 0.20, 1.25, 0.020, 0.015
+      stage, eps, temp, lr, actor_lr = 1, 0.20, 1.20, 0.0040, 0.0030
     elif progress <= 0.50:
-      stage, eps, temp, lr, actor_lr = 2, 0.12, 0.95, 0.012, 0.010
+      stage, eps, temp, lr, actor_lr = 2, 0.12, 0.90, 0.0025, 0.0020
     elif progress <= 0.80:
-      stage, eps, temp, lr, actor_lr = 3, 0.06, 0.70, 0.007, 0.005
+      stage, eps, temp, lr, actor_lr = 3, 0.06, 0.65, 0.0012, 0.0010
     else:
-      stage, eps, temp, lr, actor_lr = 4, 0.02, 0.45, 0.003, 0.002
+      stage, eps, temp, lr, actor_lr = 4, 0.02, 0.45, 0.0005, 0.0004
 
     td_bot.epsilon = eps
     q_bot.epsilon = eps

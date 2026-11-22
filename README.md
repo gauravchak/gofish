@@ -30,12 +30,14 @@ cd gofish
 ```
 *(No `git`? Click the green **Code → Download ZIP** button on GitHub, unzip it, and open a terminal inside the `gofish` folder.)*
 
-### 2. Install Flask
+### 2. Install Flask (and optional PyTorch for RL Bots)
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate        # On Windows (PowerShell): .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+pip install -r requirements-ml.txt   # Optional: enables the 3 PyTorch RL bots & training
 ```
+*(Note: If you skip `requirements-ml.txt`, the game still works cleanly with humans + Random/Beginner/Heuristic/Tree bots! For PyTorch, Python 3.10–3.13 is recommended for prebuilt wheels.)*
 
 ### 3. Start the Server
 ```bash
@@ -84,12 +86,12 @@ gofish/
 │   ├── heuristic.py        # Rules-based (0-ply) hand scorer using all 100 valid 3-card sets
 │   └── tree_bot.py         # 1-level & 2-level Expectimax lookahead tree player
 ├── ml/
-│   ├── nn.py               # Tiny zero-dependency 2-layer neural network (pure Python!)
+│   ├── nn.py               # Clean PyTorch CardMLP (nn.Module, weights_only=True checkpoints)
 │   ├── features.py         # Shared 16-feature suit-invariant hand & table encoder
-│   ├── td_value.py         # RL Bot #1: TD(lambda) afterstate Value learning
-│   ├── q_learning.py       # RL Bot #2: DQN-style Q-Learning with target networks
-│   └── policy_gradient.py  # RL Bot #3: Advantage Actor-Critic (A2C) Policy Gradient
-├── models/                 # Trained RL weights (~28 KB total, human-readable JSON!)
+│   ├── td_value.py         # RL Bot #1: PyTorch TD(lambda) afterstate Value learning
+│   ├── q_learning.py       # RL Bot #2: PyTorch DQN-style Q-Learning with target networks
+│   └── policy_gradient.py  # RL Bot #3: PyTorch Advantage Actor-Critic (A2C) Policy Gradient
+├── models/                 # Pre-trained PyTorch checkpoints (~56 KB total, models/*.pt)
 ├── scripts/
 │   ├── evaluate.py         # Headless bot-vs-bot arena (win rates, speed, optional self-play)
 │   └── train_rl.py         # 10,000-game progressive Elo RL curriculum trainer
@@ -97,8 +99,9 @@ gofish/
 │   ├── test_game.py        # Rules, engine turn flow, and zero-leakage trajectory tests
 │   ├── test_bots.py        # Bot legality, winning-move, and bot-vs-bot trajectory tests
 │   ├── test_family.py      # Family profile persistence and Elo math tests
-│   └── test_rl.py          # Neural net, feature dims, and all 3 RL bots tests
-└── requirements.txt        # Minimal dependencies (still just Flask!)
+│   └── test_rl.py          # PyTorch CardMLP, feature dims, and all 3 RL bots tests
+├── requirements.txt        # Minimal web dependencies (just Flask!)
+└── requirements-ml.txt     # Optional ML/RL dependency (PyTorch)
 ```
 
 ---
@@ -145,35 +148,36 @@ You can even generate bot self-play training data with `--save-trajectories self
 
 ---
 
-## Step 3: The 3 Reinforcement Learning (RL) Players (`ml/`)
+## Step 3: The 3 PyTorch Reinforcement Learning (RL) Players (`ml/`)
 
-All three RL bots are written in **zero-dependency pure Python** (using [ml/nn.py](ml/nn.py), a ~130-line 2-layer neural network with exact backprop—no PyTorch or TensorFlow install needed!) and share the exact same 16 suit-invariant features in [ml/features.py](ml/features.py):
+All three RL bots are written in **clean, idiomatic PyTorch** (`nn.Module`, `nn.Sequential`, `optim.Adam`, `loss.backward()`, `torch.distributions.Categorical`, safe `weights_only=True` `.pt` checkpoints) so kids learn real PyTorch patterns while sharing the exact same 16 suit-invariant features in [ml/features.py](ml/features.py):
 
 1. **🧠 RL Bot — TD Value ([ml/td_value.py](ml/td_value.py)):**
-   - Learns a **state value function** $V(s) \in (0, 1)$ predicting win probability from any 6-card hand using **TD($\lambda$)** backward returns (just like TD-Gammon!).
+   - Learns a **state value function** $V(s) \in (0, 1)$ predicting win probability from any 6-card hand using **TD($\lambda$)** backward returns + `F.binary_cross_entropy` (just like TD-Gammon!).
 2. **🧠 RL Bot — Q-Learning ([ml/q_learning.py](ml/q_learning.py)):**
-   - Learns explicit **action values** $Q(s, a) \in (-1, 1)$ for every legal `DRAW` and `DISCARD` using Bellman backups + soft-updated target networks (DQN-style). Needs zero draw simulation at play time!
+   - Learns explicit **action values** $Q(s, a) \in (-1, 1)$ for every legal `DRAW` and `DISCARD` using Bellman backups, soft-updated target networks (`lerp_`), and `F.smooth_l1_loss` (DQN-style). Needs zero draw simulation at play time!
 3. **🧠 RL Bot — Policy Gradient ([ml/policy_gradient.py](ml/policy_gradient.py)):**
-   - **Advantage Actor-Critic (A2C):** an **Actor** outputs probabilities over legal actions via masked softmax, while a **Critic** estimates the pre-action baseline $V(s_t)$ so moves that beat expectations get pushed up.
+   - **Advantage Actor-Critic (A2C):** an **Actor** builds a `torch.distributions.Categorical` policy over legal actions, while a **Critic** estimates the pre-action baseline $V(s_t)$ so moves that beat expectations get pushed up via `dist.log_prob(chosen) * advantage`.
 
-### Train All 3 RL Bots Yourself (10,000 Progressive Elo Games)
+### Train All 3 PyTorch RL Bots Yourself (10,000 Progressive Elo Games)
 ```bash
+pip install -r requirements-ml.txt
 python3 -m scripts.train_rl --games 10000 --save-trajectories selfplay_10k.jsonl.gz
 ```
-The curriculum automatically gets harder across 4 stages (Starter/Beginner → Heuristic → Top-Elo Pool → Champions League), saves compact gzip-compressed trajectories to gitignored `selfplay_10k.jsonl.gz` (~15 MB for 10,000 games!), saves trained weights to `models/*.json`, and runs a round-robin tournament across all 8 players:
+The curriculum automatically gets harder across 4 stages (Starter/Beginner → Heuristic → Top-Elo Pool → Champions League), finishes in ~3 minutes on CPU, saves compact gzip-compressed trajectories to gitignored `selfplay_10k.jsonl.gz` (~14 MB for 10,000 games!), saves PyTorch checkpoints to `models/*.pt`, and runs a round-robin tournament across all 8 players:
 
 | Rank | Player | Tournament Elo | Overall Win% |
 |---:|---|---:|---:|
-| 1 | Tree Bot (1-Level) | 1155 | 67.9% |
-| 2 | 🧠 RL Bot — Policy Gradient (A2C) | 1140 | 62.2% |
-| 3 | Heuristic Bot (Easy) | 1120 | 69.9% |
-| 4 | Tree Bot (2-Level) | 1110 | 60.7% |
-| 5 | 🧠 RL Bot — Q-Learning | 1092 | 61.5% |
-| 6 | 🧠 RL Bot — TD Value | 1053 | 57.7% |
-| 7 | Beginner Bot (Very Easy) | 726 | 9.0% |
-| 8 | Random Bot (Starter) | 604 | 1.3% |
+| 1 | Heuristic Bot (Easy) | 1144 | 66.0% |
+| 2 | 🧠 RL Bot — Policy Gradient (PyTorch) | 1142 | **67.9%** |
+| 3 | Tree Bot (2-Level) | 1130 | 63.1% |
+| 4 | 🧠 RL Bot — Q-Learning (PyTorch) | 1121 | 60.3% |
+| 5 | Tree Bot (1-Level) | 1101 | 66.0% |
+| 6 | 🧠 RL Bot — TD Value (PyTorch) | 1078 | 58.3% |
+| 7 | Beginner Bot (Very Easy) | 708 | 9.6% |
+| 8 | Random Bot (Starter) | 576 | 0.0% |
 
-All three trained RL bots are already included in `models/` and appear right in the lobby dropdown so your family can play against them immediately!
+All three trained PyTorch checkpoints are included in `models/` and appear right in the lobby dropdown once PyTorch is installed!
 
 ---
 
@@ -239,4 +243,4 @@ python3 -m unittest discover -s tests -v
 
 - [x] **Step 1 — Playable Intranet Game & Clean Trajectory Logging:** Split rules/engine/logger from Flask, record leak-free v2 trajectories, add tests and setup guide.
 - [x] **Step 2 — Rules & 1-/2-Level Tree Computer Player:** Add Heuristic, 1-Level Tree, and 2-Level Tree bots, a headless benchmark arena, and solo/mixed lobby play with paced bot turns.
-- [x] **Step 3 — ML / RL Computer Players:** Trained three zero-dependency RL bots (TD Value, Q-Learning, and A2C Policy Gradient) via 10,000 progressive Elo self-play games and plugged all three directly into the lobby dropdown and leaderboard!
+- [x] **Step 3 — ML / RL Computer Players:** Trained three idiomatic PyTorch RL bots (TD Value, Q-Learning, and A2C Policy Gradient) via 10,000 progressive Elo self-play games and plugged all three directly into the lobby dropdown and leaderboard!
