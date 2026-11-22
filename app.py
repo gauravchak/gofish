@@ -198,8 +198,7 @@ def get_state():
 
   hand = []
   if game['started'] and my_player is not None:
-    hand = sorted(game['hands'][my_player], key=lambda c: (c[1], c[0]))
-    game['hands'][my_player] = hand
+    hand = game['hands'][my_player]
 
   return jsonify({
       'started': game['started'],
@@ -219,6 +218,16 @@ def get_state():
       'log': game['log'],
       'saved_games': saved_games,
   })
+
+
+@app.route('/reorder', methods=['POST'])
+def reorder_card():
+  p = game['players'].get(get_client_ip())
+  idx = (request.json or {}).get('index', -1)
+  if game['started'] and p is not None and 0 <= idx < len(game['hands'][p]):
+    card = game['hands'][p].pop(idx)
+    game['hands'][p].insert(0, card)
+  return jsonify({'ok': True})
 
 
 @app.route('/draw', methods=['POST'])
@@ -388,7 +397,7 @@ HTML_PAGE = """
     </div>
 
     <div class="box">
-      <div>Your Hand (Tap a card to put it down):</div>
+      <div id="handPrompt">Your Hand (Tap a card to move it to the front of your hand):</div>
       <div id="hand"></div>
     </div>
   </div>
@@ -528,13 +537,18 @@ HTML_PAGE = """
         }
       }
 
+      const canDiscard = Boolean(!data.winner && data.turn === data.my_player && data.phase === 'DISCARD');
+      document.getElementById('handPrompt').innerText = canDiscard
+        ? "Your Hand (Tap a card to put it down):"
+        : "Your Hand (Tap a card to move it to the front of your hand):";
+
       const handEl = document.getElementById('hand');
       handEl.innerHTML = '';
       data.hand.forEach((label, idx) => {
         const div = document.createElement('div');
         div.className = 'card ' + colorClass(label);
         div.innerText = label;
-        div.onclick = () => post('/discard', {index: idx});
+        div.onclick = () => canDiscard ? post('/discard', {index: idx}) : post('/reorder', {index: idx});
         handEl.appendChild(div);
       });
     }
