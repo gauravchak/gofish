@@ -71,11 +71,12 @@ class TestBotsBehavior(unittest.TestCase):
       bot = create_bot(opt['key'])
       self.assertTrue(bot.player_type.startswith('bot:'))
 
-    # New player (1000 Elo) starts against Very Easy Beginner Bot and levels up.
-    self.assertEqual(choose_bot_for_elo(950), 'novice')
-    self.assertEqual(choose_bot_for_elo(1000), 'novice')
-    self.assertEqual(choose_bot_for_elo(1040), 'heuristic')
-    self.assertEqual(choose_bot_for_elo(1090), 'tree_1ply')
+    # New player (1000 Elo) starts against Random Bot and levels up cleanly.
+    self.assertEqual(choose_bot_for_elo(950), 'random')
+    self.assertEqual(choose_bot_for_elo(1000), 'random')
+    self.assertEqual(choose_bot_for_elo(1015), 'novice')
+    self.assertEqual(choose_bot_for_elo(1050), 'heuristic')
+    self.assertEqual(choose_bot_for_elo(1100), 'tree_1ply')
     self.assertEqual(choose_bot_for_elo(1150), 'tree_2ply')
 
   def test_all_bots_take_immediate_winning_shown_card_and_win(self):

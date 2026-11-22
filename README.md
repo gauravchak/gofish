@@ -19,29 +19,44 @@ A family rummy style game as an illustrative journey to teach your kids how to s
 
 ---
 
-## Quick Start: Play Solo or on Home Wi-Fi (Intranet)
+## Quick Start: Set Up & Play at Home (Solo or Family Wi-Fi)
 
-### 1. Install Flask
+**What you need:** One computer (Mac, Windows, or Linux) with **Python 3.10+** installed, plus any phones, tablets, or laptops on the same home Wi-Fi.
+
+### 1. Download the Repo
+```bash
+git clone https://github.com/gauravchak/gofish.git
+cd gofish
+```
+*(No `git`? Click the green **Code → Download ZIP** button on GitHub, unzip it, and open a terminal inside the `gofish` folder.)*
+
+### 2. Install Flask
 ```bash
 python3 -m venv .venv
-source .venv/bin/activate        # On Windows: .venv\Scripts\activate
+source .venv/bin/activate        # On Windows (PowerShell): .venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 ```
 
-### 2. Start the Server
+### 3. Start the Server
 ```bash
 python3 app.py
 ```
+*(Press `Ctrl+C` in this terminal window whenever you want to stop the server.)*
 
-### 3. Play!
-- **Play solo vs the computer:** Open `http://localhost:7171`, type your name, pick a computer difficulty (`Easy`, `Medium`, or `Hard`), and click **Quick Play Solo** (or add 1–3 computer players to the lobby).
+### 4. Play!
+- **Play solo vs the computer:** Open `http://localhost:7171`, type your name (or pick a saved name from the dropdown), leave **Auto-Match by Elo** selected (starts you with a warm-up game against `Random Bot` and levels up as you win!), and click **Quick Play Solo**.
 - **Play with family on the same Wi-Fi:**
-  1. Find your computer's local Wi-Fi IP address:
+  1. Find the host computer's local Wi-Fi IP address:
      - **macOS:** `ipconfig getifaddr en0` (or System Settings → Wi-Fi → Details)
-     - **Windows:** `ipconfig` (look for `IPv4 Address`)
+     - **Windows:** `ipconfig` (look for `IPv4 Address` under Wi-Fi)
      - **Linux:** `hostname -I`
-  2. Open `http://<YOUR-LOCAL-IP>:7171` on each phone, tablet, or laptop.
-  3. Enter your names, tap **Join Game** (and optionally **+ Add Computer**), then hit **Start Game**!
+  2. Open `http://<YOUR-LOCAL-IP>:7171` (for example `http://192.168.1.42:7171`) in a browser on each phone, tablet, or laptop.
+  3. Enter or pick your names, tap **Join Game** (and optionally **+ Add Computer**), then hit **Start Game**!
+
+> **Phone or tablet can't connect?**
+> - Make sure every device is on the **same Wi-Fi network** (not Guest Wi-Fi, cellular data, or a VPN).
+> - If macOS or Windows Firewall pops up asking *"Allow Python to accept incoming network connections?"*, click **Allow**.
+> - Double-check you typed `http://` (not `https://`) and `:7171` at the end.
 
 > **Testing 2 human tabs on one laptop?** Use `?mock_ip=` (only honored from `localhost` so devices on Wi-Fi cannot spoof each other):
 > - Tab 1: `http://localhost:7171/?mock_ip=alice`
@@ -83,17 +98,20 @@ gofish/
 
 All computer players implement the exact same two methods in [bots/base.py](bots/base.py): `choose_draw(obs)` and `choose_discard(obs)`. Later, our **ML player** will plug into the exact same interface!
 
-By default, **Auto-Match by Elo** picks the right opponent for your rating: brand-new players (1000 Elo) start against the **Beginner Bot (Very Easy)** for an enjoyable first-time win chance, and automatically level up as their Elo climbs (`< 1025` → Beginner, `< 1075` → Heuristic, `< 1135` → 1-Level Tree, `1135+` → 2-Level Tree).
+By default, **Auto-Match by Elo** picks the right opponent for your rating: brand-new players (1000 Elo) start with a warm-up game against **Random Bot (Starter)** and automatically level up as their Elo climbs (`< 1007` → Random, `< 1035` → Beginner, `< 1085` → Heuristic, `< 1140` → 1-Level Tree, `1140+` → 2-Level Tree).
 
-1. **Beginner Bot — Very Easy ([bots/novice.py](bots/novice.py)):**
-   - Plays like someone just learning the game: always grabs an obvious winning card and protects complete sets, but makes casual mistakes and doesn't count buried discards.
+1. **Random Bot — Starter ([bots/base.py](bots/base.py)):**
+   - Picks completely at random among legal moves—a welcoming warm-up opponent for a player's very first solo game.
 
-2. **Heuristic Bot — Easy ([bots/heuristic.py](bots/heuristic.py)):**
+2. **Beginner Bot — Very Easy ([bots/novice.py](bots/novice.py)):**
+   - Plays like someone just learning the game: always grabs an obvious winning card and sometimes protects a complete 3-card set, but otherwise discards casually at random.
+
+3. **Heuristic Bot — Easy ([bots/heuristic.py](bots/heuristic.py)):**
    - There are only **100 valid 3-card sets** in a 52-card deck (52 three-of-a-kinds + 48 suited runs).
    - It splits its 6 cards into two groups of 3 (only 10 ways!) and counts how many **live unseen cards** can finish each group—subtracting dead cards already buried in the discard pile.
    - It also watches what the next player picked from `Shown` so it avoids feeding them helpful cards.
 
-3. **1-Level Tree Bot — Medium ([bots/tree_bot.py](bots/tree_bot.py)):**
+4. **1-Level Tree Bot — Medium ([bots/tree_bot.py](bots/tree_bot.py)):**
    - Uses a **1-level Expectimax tree** to think one turn ahead:
      ```text
              [My Choice: Pick Shown ('S') or Hidden ('T')?]
@@ -105,7 +123,7 @@ By default, **Auto-Match by Elo** picks the right opponent for your rating: bran
      ```
    - On `DISCARD`, it checks every legal discard and averages how strong its hand will be after next turn's random draw.
 
-4. **2-Level Tree Bot — Hard ([bots/tree_bot.py](bots/tree_bot.py)):**
+5. **2-Level Tree Bot — Hard ([bots/tree_bot.py](bots/tree_bot.py)):**
    - Takes the top candidate moves from Level 1 and looks a **second turn ahead** (`Draw 1 → Discard 1 → Draw 2 → Discard 2`), discounting future turns slightly (`gamma = 0.85`) so winning sooner is always preferred.
 
 ### Pit Bots Against Each Other (No Browser Needed!)
