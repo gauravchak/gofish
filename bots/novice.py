@@ -1,18 +1,19 @@
 """Beginner (Very Easy) computer player for family members' first solo games.
 
-Plays like a casual beginner learning Two-Sets-of-3:
-  - Never misses an obvious immediate win (takes a winning Shown card and makes
-    a winning discard if available).
-  - Keeps any complete 3-card set it already holds.
-  - Otherwise only partially spots pairs/neighbors and makes occasional casual
-    mistakes — never counts dead discard cards or tracks what opponents picked.
+Plays like a very casual beginner just learning Two-Sets-of-3:
+  - Still spots an immediate win (takes a winning Shown card or makes a winning
+    discard when all 6 winning cards are right there).
+  - Almost always draws from the Hidden Deck instead of watching Shown closely.
+  - Sometimes protects a complete 3-card set (~60% of the time), but otherwise
+    discards casually at random — never tracks pairs, dead discards, or what
+    opponents are collecting.
 """
 
 from itertools import combinations
 import random
 
 from bots.base import BotPolicy
-from bots.heuristic import VALID_SET_MASKS, is_winning_hand_ids, pair_completers
+from bots.heuristic import VALID_SET_MASKS, is_winning_hand_ids
 from game.rules import id_to_card
 
 
@@ -25,24 +26,16 @@ def _cards_in_complete_sets(hand_ids):
   return protected
 
 
-def _cards_with_partner(hand_ids):
-  """Returns card IDs that form a pair or suited neighbor with another card in hand."""
-  partnered = set()
-  for a, b in combinations(hand_ids, 2):
-    if pair_completers(a, b):
-      partnered.update((a, b))
-  return partnered
-
-
 class NoviceBot(BotPolicy):
-  """Very easy bot: fun first opponent that humans have an above-average chance to beat."""
+  """Very easy bot: welcoming first opponent with a high human win rate."""
 
   name = 'Beginner Bot (Very Easy)'
   player_type = 'bot:novice'
 
-  def __init__(self, seed=None, smart_prob=0.45):
+  def __init__(self, seed=None, keep_set_prob=0.60, take_set_prob=0.20):
     self._rng = random.Random(seed)
-    self.smart_prob = smart_prob
+    self.keep_set_prob = keep_set_prob
+    self.take_set_prob = take_set_prob
 
   def choose_draw(self, obs):
     legal = obs['legal_actions']
@@ -53,16 +46,14 @@ class NoviceBot(BotPolicy):
     shown_id = obs['shown_card_id']
     hand7 = hand6 + [shown_id]
 
-    # Always grab an immediate winning card from Shown!
+    # Always grab an immediate winning card from Shown.
     for i in range(6):  # Cannot re-discard shown_id (at index 6)
       if is_winning_hand_ids(hand7[:i] + hand7[i + 1 :]):
         return 'S'
 
-    # Otherwise only occasionally take Shown when it completes a set or makes a pair.
+    # Only occasionally notice when Shown completes a first 3-card set.
     if shown_id in _cards_in_complete_sets(hand7):
-      return 'S' if self._rng.random() < 0.7 else 'T'
-    if shown_id in _cards_with_partner(hand7):
-      return 'S' if self._rng.random() < 0.25 else 'T'
+      return 'S' if self._rng.random() < self.take_set_prob else 'T'
     return 'T'
 
   def choose_discard(self, obs):
@@ -74,16 +65,12 @@ class NoviceBot(BotPolicy):
       if cid in legal_ids and is_winning_hand_ids(hand7[:i] + hand7[i + 1 :]):
         return id_to_card(cid)
 
-    # Protect complete sets, and with `smart_prob` also protect pairs/neighbors.
-    complete = _cards_in_complete_sets(hand7)
-    candidates = [cid for cid in legal_ids if cid not in complete]
-    if not candidates:
-      candidates = legal_ids
-
-    if self._rng.random() < self.smart_prob:
-      partnered = _cards_with_partner(hand7)
-      loose = [cid for cid in candidates if cid not in partnered]
-      if loose:
-        candidates = loose
+    # Sometimes protect an existing 3-card set; otherwise discard casually at random.
+    candidates = legal_ids
+    if self._rng.random() < self.keep_set_prob:
+      complete = _cards_in_complete_sets(hand7)
+      outside_sets = [cid for cid in legal_ids if cid not in complete]
+      if outside_sets:
+        candidates = outside_sets
 
     return id_to_card(self._rng.choice(candidates))
