@@ -7,16 +7,18 @@ import time
 from flask import Flask, jsonify, render_template_string, request
 
 from bots import BOT_OPTIONS, create_bot
-from game import GameEngine, TrajectoryLogger
+from game import FamilyStore, GameEngine, TrajectoryLogger
 
 app = Flask(__name__)
 
 LOG_FILE = 'trajectories.jsonl'
+FAMILY_FILE = 'family.json'
 BOT_STEP_DELAY_SECONDS = 0.65
 
 game_lock = threading.Lock()
 trajectory_logger = TrajectoryLogger(LOG_FILE)
-engine = GameEngine(logger=trajectory_logger)
+family_store = FamilyStore(FAMILY_FILE)
+engine = GameEngine(logger=trajectory_logger, family_store=family_store)
 
 # Maps synthetic bot IDs (e.g., 'bot:1') -> BotPolicy instance.
 bot_policies = {}
@@ -299,6 +301,13 @@ HTML_PAGE = """
     .bot-panel { margin-top: 14px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.18); }
     .moves-list { list-style: none; padding: 0; margin: 8px 0 0 0; font-size: 13px; color: #d8f3dc; text-align: left; max-width: 420px; margin-left: auto; margin-right: auto; }
     .moves-list li { padding: 3px 0; border-bottom: 1px solid rgba(255,255,255,0.08); }
+    .elo-table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 14px; }
+    .elo-table th, .elo-table td { padding: 6px 8px; border-bottom: 1px solid rgba(255,255,255,0.12); text-align: left; }
+    .elo-table th { color: #a8dadc; font-weight: 600; }
+    .elo-table td.num, .elo-table th.num { text-align: right; }
+    .elo-banner { margin: 10px 0; font-size: 14px; color: #d8f3dc; }
+    .delta-up { color: #80ed99; font-weight: bold; }
+    .delta-down { color: #ff8fa3; font-weight: bold; }
   </style>
 </head>
 <body>
@@ -313,9 +322,11 @@ HTML_PAGE = """
     <div id="lobbyRoster" class="roster"></div>
     <p id="myIdentity" style="font-size: 18px; color: #ffd166;"></p>
     <div id="joinControls">
+      <select id="nameSelect" style="display: none;" onchange="onNameSelectChange()"></select>
       <input type="text" id="nameInput" placeholder="Enter your name" maxlength="20">
       <button id="joinBtn" class="btn-green" onclick="joinWithName()">Join Game</button>
     </div>
+    <div id="lobbyHint" class="hint"></div>
 
     <div class="bot-panel">
       <div style="font-size: 14px; color: #a8dadc; margin-bottom: 6px;">🤖 Play with a Computer Player</div>
@@ -329,6 +340,22 @@ HTML_PAGE = """
     </div>
   </div>
 
+  <!-- LOCAL FAMILY & BOT LEADERBOARD (Stored in gitignored family.json) -->
+  <div id="leaderboardBox" class="box" style="display: none;">
+    <h3 style="margin: 0 0 6px 0;">🏆 Elo Leaderboard</h3>
+    <table class="elo-table">
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Player</th>
+          <th class="num">Elo</th>
+          <th class="num">W-L-D</th>
+        </tr>
+      </thead>
+      <tbody id="leaderboardBody"></tbody>
+    </table>
+  </div>
+
   <!-- ACTIVE GAME VIEW (Shown once game starts) -->
   <div id="gameArea" style="display: none;">
     <div class="box">
@@ -339,6 +366,7 @@ HTML_PAGE = """
         <div id="winningHandLabel" style="font-size: 14px; color: #ffd166; margin-bottom: 6px;"></div>
         <div id="winningHandCards"></div>
       </div>
+      <div id="eloBanner" class="elo-banner" style="display: none;"></div>
       <div id="rematchBox" style="display: none; margin: 10px 0;">
         <button class="btn-gold" onclick="post('/rematch')">Play Again (Same Players)</button>
       </div>
@@ -365,9 +393,11 @@ HTML_PAGE = """
 
   <script>
     const queryStr = window.location.search;
+    const NEW_PLAYER_OPTION = '__NEW__';
     let wasMyTurn = false;
     let isSubmitting = false;
     let botOptionsLoaded = false;
+    let lastNameOptionsKey = '';
 
     function notifyMyTurn() {
       if (navigator.vibrate) {
@@ -403,19 +433,140 @@ HTML_PAGE = """
           body: JSON.stringify(body)
         });
         const result = await res.json();
+        const errMsg = (!result.ok && result.error) ? result.error : '';
         const hintEl = document.getElementById('actionHint');
-        if (hintEl) {
-          hintEl.innerText = (!result.ok && result.error) ? result.error : '';
-        }
+        if (hintEl) hintEl.innerText = errMsg;
+        const lobbyHintEl = document.getElementById('lobbyHint');
+        if (lobbyHintEl) lobbyHintEl.innerText = errMsg;
       } finally {
         isSubmitting = false;
       }
       refresh();
     }
 
+    function onNameSelectChange() {
+      const sel = document.getElementById('nameSelect');
+      const input = document.getElementById('nameInput');
+      const showFreeform = (sel.style.display === 'none') || (sel.value === NEW_PLAYER_OPTION);
+      input.style.display = showFreeform ? 'inline-block' : 'none';
+      if (showFreeform) input.focus();
+    }
+
+    function getSelectedPlayerName() {
+      const sel = document.getElementById('nameSelect');
+      if (sel.style.display !== 'none' && sel.value && sel.value !== NEW_PLAYER_OPTION) {
+        return sel.value;
+      }
+      return document.getElementById('nameInput').value.trim();
+    }
+
+    function updateNameDropdown(savedNames, joinedNames) {
+      const sel = document.getElementById('nameSelect');
+      const input = document.getElementById('nameInput');
+      const names = savedNames || [];
+      const joinedSet = new Set((joinedNames || []).map((n) => n.toLowerCase()));
+      const key = JSON.stringify({names, joined: Array.from(joinedSet).sort()});
+
+      if (names.length === 0) {
+        sel.style.display = 'none';
+        input.style.display = 'inline-block';
+        lastNameOptionsKey = key;
+        return;
+      }
+
+      if (key !== lastNameOptionsKey) {
+        const prevValue = sel.value;
+        sel.innerHTML = '';
+        let firstAvailable = null;
+        names.forEach((name) => {
+          const opt = document.createElement('option');
+          const inLobby = joinedSet.has(name.toLowerCase());
+          opt.value = name;
+          opt.innerText = inLobby ? `${name} (in lobby)` : name;
+          opt.disabled = inLobby;
+          if (!inLobby && firstAvailable === null) firstAvailable = name;
+          sel.appendChild(opt);
+        });
+        const newOpt = document.createElement('option');
+        newOpt.value = NEW_PLAYER_OPTION;
+        newOpt.innerText = '+ New player...';
+        sel.appendChild(newOpt);
+
+        // Preserve user's choice if still valid; otherwise pick first available saved name.
+        if (prevValue === NEW_PLAYER_OPTION) {
+          sel.value = NEW_PLAYER_OPTION;
+        } else if (prevValue && names.includes(prevValue) && !joinedSet.has(prevValue.toLowerCase())) {
+          sel.value = prevValue;
+        } else {
+          sel.value = firstAvailable !== null ? firstAvailable : NEW_PLAYER_OPTION;
+        }
+        lastNameOptionsKey = key;
+      }
+
+      sel.style.display = 'inline-block';
+      input.style.display = (sel.value === NEW_PLAYER_OPTION) ? 'inline-block' : 'none';
+    }
+
+    function renderLeaderboard(entries, show) {
+      const box = document.getElementById('leaderboardBox');
+      const body = document.getElementById('leaderboardBody');
+      if (!show || !entries || entries.length === 0) {
+        box.style.display = 'none';
+        return;
+      }
+      box.style.display = 'block';
+      body.innerHTML = '';
+      entries.forEach((entry, idx) => {
+        const tr = document.createElement('tr');
+        const cells = [
+          {text: String(idx + 1), cls: ''},
+          {text: (entry.is_bot ? '🤖 ' : '🧑 ') + entry.name, cls: ''},
+          {text: String(Math.round(entry.elo)), cls: 'num'},
+          {text: `${entry.wins}-${entry.losses}-${entry.draws}`, cls: 'num'},
+        ];
+        cells.forEach((c) => {
+          const td = document.createElement('td');
+          td.className = c.cls;
+          td.innerText = c.text;
+          tr.appendChild(td);
+        });
+        body.appendChild(tr);
+      });
+    }
+
+    function renderEloBanner(updates) {
+      const el = document.getElementById('eloBanner');
+      if (!updates || updates.length === 0) {
+        el.style.display = 'none';
+        return;
+      }
+      el.style.display = 'block';
+      el.innerHTML = '';
+      const prefix = document.createElement('span');
+      prefix.innerText = '📊 Elo: ';
+      el.appendChild(prefix);
+      updates.forEach((u, idx) => {
+        if (idx > 0) {
+          const sep = document.createElement('span');
+          sep.innerText = '  ·  ';
+          el.appendChild(sep);
+        }
+        const nameSpan = document.createElement('span');
+        nameSpan.innerText = `${u.name} ${Math.round(u.elo)} (`;
+        el.appendChild(nameSpan);
+        const dSpan = document.createElement('span');
+        const sign = u.delta >= 0 ? '+' : '';
+        dSpan.className = u.delta >= 0 ? 'delta-up' : 'delta-down';
+        dSpan.innerText = `${sign}${u.delta}`;
+        el.appendChild(dSpan);
+        const closeSpan = document.createElement('span');
+        closeSpan.innerText = ')';
+        el.appendChild(closeSpan);
+      });
+    }
+
     function joinWithName() {
-      const name = document.getElementById('nameInput').value.trim();
-      post('/join', {name: name});
+      post('/join', {name: getSelectedPlayerName()});
     }
 
     function addBot() {
@@ -424,9 +575,8 @@ HTML_PAGE = """
     }
 
     function quickPlaySolo() {
-      const name = document.getElementById('nameInput').value.trim();
       const botKey = document.getElementById('botSelect').value || 'tree_1ply';
-      post('/quick_play', {name: name, bot_key: botKey});
+      post('/quick_play', {name: getSelectedPlayerName(), bot_key: botKey});
     }
 
     function confirmStopGame() {
@@ -490,8 +640,11 @@ HTML_PAGE = """
         } else {
           idText.innerText = `Not joined yet (${data.my_ip})`;
           joinControls.style.display = 'block';
+          updateNameDropdown(data.saved_human_names, data.player_names);
           joinBtn.disabled = data.joined_count >= 4;
         }
+
+        renderLeaderboard(data.leaderboard, true);
 
         document.getElementById('addBotBtn').disabled = data.joined_count >= 4;
         document.getElementById('quickPlayBtn').style.display =
@@ -505,6 +658,7 @@ HTML_PAGE = """
       }
 
       document.getElementById('lobbyBox').style.display = 'none';
+      renderLeaderboard(data.leaderboard, false);
       document.getElementById('gameArea').style.display = 'block';
 
       const badge = document.getElementById('lockedPlayerBadge');
@@ -529,6 +683,7 @@ HTML_PAGE = """
       wasMyTurn = isMyTurn;
 
       rematchBox.style.display = data.winner ? 'block' : 'none';
+      renderEloBanner(data.elo_updates);
 
       if (data.winner === 'Draw') {
         statusEl.innerText = "🤝 Draw Game (Deck Empty)";

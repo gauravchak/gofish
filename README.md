@@ -61,7 +61,8 @@ gofish/
 ├── game/
 │   ├── rules.py            # Pure card math: 0..51 card IDs, valid sets, win checking
 │   ├── engine.py           # Headless game state machine (used by humans, bots, and tests)
-│   └── logger.py           # Saves finished games to trajectories.jsonl (schema v2)
+│   ├── logger.py           # Saves finished games to trajectories.jsonl (schema v2)
+│   └── family.py           # Local family.json player profiles & Elo rating leaderboard
 ├── bots/
 │   ├── base.py             # Shared BotPolicy interface (used by rules, tree, and future ML!)
 │   ├── heuristic.py        # Rules-based (0-ply) hand scorer using all 100 valid 3-card sets
@@ -70,7 +71,8 @@ gofish/
 │   └── evaluate.py         # Headless bot-vs-bot arena (win rates, speed, optional self-play)
 ├── tests/
 │   ├── test_game.py        # Rules, engine turn flow, and zero-leakage trajectory tests
-│   └── test_bots.py        # Bot legality, winning-move, and bot-vs-bot trajectory tests
+│   ├── test_bots.py        # Bot legality, winning-move, and bot-vs-bot trajectory tests
+│   └── test_family.py      # Family profile persistence and Elo math tests
 └── requirements.txt        # Minimal dependencies (just Flask!)
 ```
 
@@ -107,6 +109,15 @@ python3 -m scripts.evaluate --bot-a tree_1ply --bot-b heuristic --games 60
 python3 -m scripts.evaluate --bot-a tree_2ply --bot-b tree_1ply --games 40
 ```
 You can even generate bot self-play training data with `--save-trajectories selfplay.jsonl`!
+
+---
+
+## Local Family Profiles & Elo Leaderboard (`family.json`)
+
+When players join, their name is saved to a local **`family.json`** file (listed in `.gitignore` so personal family names and stats are **never pushed to GitHub**):
+- **Quick lobby picker:** Pick a saved family member from the dropdown, or select **`+ New player...`** to type a new name.
+- **Automatic Elo ratings (humans + bots!):** Everyone starts at **1000 Elo** (`K = 32`). Beating a higher-rated player (or a harder computer player!) earns more points, and total Elo across all players in a match is conserved (zero-sum) for 2-, 3-, and 4-player games.
+- **Live leaderboard:** See everyone's Elo and `W-L-D` record in the lobby—great for tracking whether your family can out-rate the 2-Level Tree Bot (and later, the ML Bot!).
 
 ---
 

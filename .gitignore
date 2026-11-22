@@ -1,5 +1,6 @@
-# Game trajectories
+# Local game data (never push personal family profiles or raw trajectories)
 *.jsonl
+family.json
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
