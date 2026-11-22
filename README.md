@@ -158,9 +158,9 @@ All three RL bots are written in **zero-dependency pure Python** (using [ml/nn.p
 
 ### Train All 3 RL Bots Yourself (10,000 Progressive Elo Games)
 ```bash
-python3 -m scripts.train_rl --games 10000 --save-trajectories selfplay_10k.jsonl
+python3 -m scripts.train_rl --games 10000 --save-trajectories selfplay_10k.jsonl.gz
 ```
-The curriculum automatically gets harder across 4 stages (Starter/Beginner → Heuristic → Top-Elo Pool → Champions League), saves compact trajectories to gitignored `selfplay_10k.jsonl`, saves trained weights to `models/*.json`, and runs a round-robin tournament across all 8 players:
+The curriculum automatically gets harder across 4 stages (Starter/Beginner → Heuristic → Top-Elo Pool → Champions League), saves compact gzip-compressed trajectories to gitignored `selfplay_10k.jsonl.gz` (~15 MB for 10,000 games!), saves trained weights to `models/*.json`, and runs a round-robin tournament across all 8 players:
 
 | Rank | Player | Tournament Elo | Overall Win% |
 |---:|---|---:|---:|

@@ -1,17 +1,25 @@
-"""JSONL trajectory logger with cached game counts and schema v2 backfill."""
+"""JSONL trajectory logger with cached game counts, compact mode, and .gz compression."""
 
+import gzip
 import json
 import os
 
 SCHEMA_VERSION = 2
 
 
+def _open_log(path, mode):
+  """Opens a plain .jsonl or compressed .jsonl.gz file transparently."""
+  if path.endswith('.gz'):
+    return gzip.open(path, mode + 't', encoding='utf-8')
+  return open(path, mode, encoding='utf-8')
+
+
 class TrajectoryLogger:
-  """Persists completed game trajectories to a JSONL file.
+  """Persists completed game trajectories to a .jsonl or .jsonl.gz file.
 
   Set compact=True for large bulk self-play runs (e.g., 10,000 games): omits
-  repeated per-step public_history and redundant string lists, keeping files
-  ~100x smaller while preserving every card ID, action, and outcome.
+  repeated per-step public_history and redundant string lists. Combine with a
+  '.jsonl.gz' filename for automatic gzip compression (~15 MB for 10,000 games).
   """
 
   def __init__(self, log_file='trajectories.jsonl', compact=False):
@@ -23,7 +31,7 @@ class TrajectoryLogger:
     if not self.log_file or not os.path.exists(self.log_file):
       return 0
     game_ids = set()
-    with open(self.log_file, 'r', encoding='utf-8') as f:
+    with _open_log(self.log_file, 'r') as f:
       for line in f:
         line = line.strip()
         if not line:
@@ -46,7 +54,8 @@ class TrajectoryLogger:
     if total_steps == 0:
       return 0
 
-    with open(self.log_file, 'a', encoding='utf-8') as f:
+    separators = (',', ':') if self.compact else None
+    with _open_log(self.log_file, 'a') as f:
       for i, step_record in enumerate(trajectory):
         if self.compact:
           record = {
@@ -84,7 +93,9 @@ class TrajectoryLogger:
         record['winner'] = winner_idx
         record['winner_type'] = winner_type
         record['steps_remaining'] = total_steps - i
-        f.write(json.dumps(record, ensure_ascii=False) + '\n')
+        f.write(
+            json.dumps(record, ensure_ascii=False, separators=separators) + '\n'
+        )
 
     self._saved_games += 1
     return total_steps

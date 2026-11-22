@@ -12,7 +12,7 @@ Curriculum (10,000 games total by default):
   - Stage 4 (80%..100%): Champions league (top-3 Elo players + 1-Level Tree)
 
 Run:
-  python3 -m scripts.train_rl --games 10000 --save-trajectories selfplay_10k.jsonl
+  python3 -m scripts.train_rl --games 10000 --save-trajectories selfplay_10k.jsonl.gz
 """
 
 import argparse
@@ -393,7 +393,7 @@ def main():
       description='Train all 3 RL bots via progressive Elo self-play.'
   )
   parser.add_argument('--games', type=int, default=10000)
-  parser.add_argument('--save-trajectories', default='selfplay_10k.jsonl')
+  parser.add_argument('--save-trajectories', default='selfplay_10k.jsonl.gz')
   parser.add_argument('--seed', type=int, default=42)
   args = parser.parse_args()
   train_all(
