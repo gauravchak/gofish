@@ -74,7 +74,10 @@ The code is intentionally small and split into clear pieces so you can read one 
 
 ```text
 gofish/
-├── app.py                  # Thin Flask web server + browser UI + paced bot turns
+├── app.py                  # Clean Flask web server + paced bot turn worker
+├── templates/
+│   ├── index.html          # Lobby, game board, Elo leaderboard, & Bot Arena UI
+│   └── league.html         # Live SVG Elo-over-Generations chart (/league)
 ├── game/
 │   ├── rules.py            # Pure card math: 0..51 card IDs, valid sets, win checking
 │   ├── engine.py           # Headless game state machine (used by humans, bots, and tests)
