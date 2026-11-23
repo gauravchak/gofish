@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bot League — Elo Progression</title>
+  <style>
+    body { font-family: system-ui, sans-serif; text-align: center; background: #1b4d3e; color: white; padding: 20px; }
+    .box { background: rgba(0,0,0,0.25); padding: 18px; border-radius: 12px; max-width: 780px; margin: 16px auto; }
+    a { color: #ffd166; text-decoration: none; font-weight: bold; }
+    svg { width: 100%; max-width: 720px; height: auto; background: rgba(0,0,0,0.22); border-radius: 10px; }
+    .legend { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; margin: 12px 0; font-size: 13px; }
+    .legend-item { display: inline-flex; align-items: center; gap: 6px; }
+    .dot { width: 11px; height: 11px; border-radius: 50%; display: inline-block; }
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 13px; }
+    th, td { padding: 6px 8px; border-bottom: 1px solid rgba(255,255,255,0.14); text-align: right; }
+    th:first-child, td:first-child { text-align: left; }
+    th { color: #a8dadc; }
+  </style>
+</head>
+<body>
+  <div style="margin-bottom: 10px;"><a href="/">← Back to Game Lobby</a></div>
+  <h2>📊 PyTorch Bot League — Elo Over Generations</h2>
+  <div id="content" class="box">Loading league history...</div>
+
+  <script>
+    const TRACKED = [
+      {key: 'rl_alphazero', label: 'RL + Tree (AlphaZero-Lite)', color: '#ffbe0b'},
+      {key: 'rl_policy_gradient', label: 'RL Policy Gradient', color: '#80ed99'},
+      {key: 'rl_q_learning', label: 'RL Q-Learning', color: '#4cc9f0'},
+      {key: 'rl_td_value', label: 'RL TD Value', color: '#f77f00'},
+      {key: 'heuristic', label: 'Heuristic Bot', color: '#ff8fa3'},
+      {key: 'tree_1ply', label: 'Tree Bot (1-Level)', color: '#c77dff'},
+    ];
+
+    async function loadLeague() {
+      const res = await fetch('/league_data');
+      const data = await res.json();
+      const box = document.getElementById('content');
+      if (!data.available || !data.history || !data.history.length) {
+        box.innerText = 'No league history yet. Run: python -m scripts.league';
+        return;
+      }
+
+      box.innerHTML = '';
+      const hist = data.history;
+
+      // Build clean SVG line chart (zero external dependencies)
+      const W = 700, H = 320, padL = 52, padR = 24, padT = 20, padB = 36;
+      const allElos = [];
+      hist.forEach((h) => TRACKED.forEach((t) => {
+        if (h.elos[t.key] !== undefined) allElos.push(h.elos[t.key]);
+      }));
+      const minY = Math.floor((Math.min(...allElos) - 30) / 50) * 50;
+      const maxY = Math.ceil((Math.max(...allElos) + 30) / 50) * 50;
+      const maxG = Math.max(hist.length - 1, 1);
+
+      const xPos = (i) => padL + (i / maxG) * (W - padL - padR);
+      const yPos = (e) => padT + (1 - (e - minY) / Math.max(maxY - minY, 1)) * (H - padT - padB);
+
+      const ns = 'http://www.w3.org/2000/svg';
+      const svg = document.createElementNS(ns, 'svg');
+      svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
+
+      for (let e = minY; e <= maxY; e += 100) {
+        const y = yPos(e);
+        const line = document.createElementNS(ns, 'line');
+        line.setAttribute('x1', padL); line.setAttribute('x2', W - padR);
+        line.setAttribute('y1', y); line.setAttribute('y2', y);
+        line.setAttribute('stroke', 'rgba(255,255,255,0.14)');
+        svg.appendChild(line);
+        const txt = document.createElementNS(ns, 'text');
+        txt.setAttribute('x', padL - 8); txt.setAttribute('y', y + 4);
+        txt.setAttribute('fill', '#a8dadc'); txt.setAttribute('font-size', '11');
+        txt.setAttribute('text-anchor', 'end');
+        txt.textContent = String(e);
+        svg.appendChild(txt);
+      }
+
+      hist.forEach((h, i) => {
+        const txt = document.createElementNS(ns, 'text');
+        txt.setAttribute('x', xPos(i)); txt.setAttribute('y', H - 12);
+        txt.setAttribute('fill', '#a8dadc'); txt.setAttribute('font-size', '11');
+        txt.setAttribute('text-anchor', 'middle');
+        txt.textContent = `Gen ${h.generation}`;
+        svg.appendChild(txt);
+      });
+
+      TRACKED.forEach((t) => {
+        const pts = hist.map((h, i) => `${xPos(i).toFixed(1)},${yPos(h.elos[t.key]).toFixed(1)}`).join(' ');
+        const poly = document.createElementNS(ns, 'polyline');
+        poly.setAttribute('fill', 'none');
+        poly.setAttribute('stroke', t.color);
+        poly.setAttribute('stroke-width', t.key.startsWith('rl_') ? '3' : '2');
+        if (!t.key.startsWith('rl_')) poly.setAttribute('stroke-dasharray', '5,4');
+        poly.setAttribute('points', pts);
+        svg.appendChild(poly);
+        hist.forEach((h, i) => {
+          const c = document.createElementNS(ns, 'circle');
+          c.setAttribute('cx', xPos(i)); c.setAttribute('cy', yPos(h.elos[t.key]));
+          c.setAttribute('r', '3.5'); c.setAttribute('fill', t.color);
+          svg.appendChild(c);
+        });
+      });
+      box.appendChild(svg);
+
+      const leg = document.createElement('div');
+      leg.className = 'legend';
+      TRACKED.forEach((t) => {
+        const item = document.createElement('span');
+        item.className = 'legend-item';
+        const dot = document.createElement('span');
+        dot.className = 'dot'; dot.style.background = t.color;
+        const lbl = document.createElement('span');
+        lbl.innerText = t.label;
+        item.appendChild(dot); item.appendChild(lbl);
+        leg.appendChild(item);
+      });
+      box.appendChild(leg);
+
+      const tbl = document.createElement('table');
+      const thead = document.createElement('thead');
+      const hr = document.createElement('tr');
+      ['Gen (Games)', 'AZ Hybrid', 'PG (A2C)', 'Q-Learn', 'TD Value', 'Heuristic', 'Tree 1-Ply', 'Tree 2-Ply'].forEach((h) => {
+        const th = document.createElement('th'); th.innerText = h; hr.appendChild(th);
+      });
+      thead.appendChild(hr); tbl.appendChild(thead);
+
+      const tbody = document.createElement('tbody');
+      hist.forEach((row) => {
+        const tr = document.createElement('tr');
+        const cols = [
+          `Gen ${row.generation} (${row.games_total.toLocaleString()})`,
+          row.elos.rl_alphazero,
+          row.elos.rl_policy_gradient,
+          row.elos.rl_q_learning,
+          row.elos.rl_td_value,
+          row.elos.heuristic,
+          row.elos.tree_1ply,
+          row.elos.tree_2ply,
+        ];
+        cols.forEach((val, idx) => {
+          const td = document.createElement('td');
+          td.innerText = idx === 0 ? String(val) : String(Math.round(val));
+          tr.appendChild(td);
+        });
+        tbody.appendChild(tr);
+      });
+      tbl.appendChild(tbody);
+      box.appendChild(tbl);
+    }
+
+    loadLeague();
+  </script>
+</body>
+</html>
