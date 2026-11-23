@@ -219,34 +219,51 @@ class TDValueBot(BotPolicy):
     card = id_to_card(cids[pick])
     return (card, feat_rows[pick]) if return_features else card
 
-  def learn_episode(self, afterstate_features, outcome, lr=None):
-    """Updates V(s) from one player's episode using PyTorch TD(lambda) + Adam."""
+  def build_episode_samples(self, afterstate_features, outcome):
+    """Returns [(feats, td_target), ...] for pushing into a ReplayBuffer."""
     if not afterstate_features:
-      return 0.0
-    if lr is not None:
-      self.set_lr(lr)
-
-    x = torch.tensor(afterstate_features, dtype=torch.float32)
-    preds = self.net(x)
-
-    # Build TD(lambda) targets without tracking gradients through the target.
+      return []
     with torch.no_grad():
+      v_vals = self.net.predict_batch(afterstate_features)
       n = len(afterstate_features)
-      v_vals = preds.tolist()
       targets = [0.0] * n
       targets[-1] = float(outcome)
       for t in range(n - 2, -1, -1):
         next_v = 0.5 + self.gamma * (v_vals[t + 1] - 0.5)
         next_ret = 0.5 + self.gamma * (targets[t + 1] - 0.5)
         targets[t] = (1.0 - self.lam) * next_v + self.lam * next_ret
-      target_tensor = torch.tensor(targets, dtype=torch.float32)
+    return list(zip(afterstate_features, targets))
 
-    loss = F.binary_cross_entropy(preds.clamp(1e-6, 1.0 - 1e-6), target_tensor)
+  def train_batch(self, samples, lr=None):
+    """Mini-batch PyTorch BCE update on [(feats, target), ...] from ReplayBuffer."""
+    if not samples:
+      return 0.0
+    if lr is not None:
+      self.set_lr(lr)
+
+    x = torch.tensor([s[0] for s in samples], dtype=torch.float32)
+    y = torch.tensor([s[1] for s in samples], dtype=torch.float32)
+    preds = self.net(x)
+    loss = F.binary_cross_entropy(preds.clamp(1e-6, 1.0 - 1e-6), y)
     self.optimizer.zero_grad()
     loss.backward()
     nn.utils.clip_grad_norm_(self.net.parameters(), 2.0)
     self.optimizer.step()
     return float(loss.item())
+
+  def learn_episode(self, afterstate_features, outcome, lr=None):
+    """Updates V(s) from one player's episode using PyTorch TD(lambda) + Adam."""
+    samples = self.build_episode_samples(afterstate_features, outcome)
+    return self.train_batch(samples, lr=lr)
+
+  def clone_frozen(self, label=None):
+    """Returns a frozen copy of this bot for Hall-of-Fame league sparring."""
+    snap = TDValueBot(hidden_dim=self.net.hidden_dim)
+    snap.net.load_state_dict(self.net.state_dict())
+    snap.epsilon = 0.0
+    if label:
+      snap.name = label
+    return snap
 
   def save(self, path, metadata=None):
     self.metadata = metadata or self.metadata

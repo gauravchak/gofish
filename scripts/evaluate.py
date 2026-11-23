@@ -111,6 +111,7 @@ def main():
       'rl_td_value',
       'rl_q_learning',
       'rl_policy_gradient',
+      'rl_alphazero',
   ]
   parser.add_argument('--bot-a', default='tree_1ply', choices=bot_choices)
   parser.add_argument('--bot-b', default='heuristic', choices=bot_choices)

@@ -31,12 +31,14 @@ class GameEngine:
       forbid_same_turn_shown_discard=True,
       min_players=2,
       max_players=4,
+      max_turns=160,
   ):
     self.logger = logger
     self.family_store = family_store
     self.forbid_same_turn_shown_discard = forbid_same_turn_shown_discard
     self.min_players = min_players
     self.max_players = max_players
+    self.max_turns = max_turns
     self.reset_lobby()
 
   def reset_lobby(self):
@@ -398,10 +400,11 @@ class GameEngine:
       self._finalize_trajectory(
           winner_idx=player_idx, winner_type=self.player_type(player_idx)
       )
-    elif len(self.deck) == 0:
+    elif len(self.deck) == 0 or (self.turn_number + 1) >= self.max_turns:
       self.winner = 'Draw'
       self.winner_idx = None
-      self.log = 'Deck empty — Draw game! (Trajectory saved)'
+      reason = 'Deck empty' if len(self.deck) == 0 else 'Turn limit reached'
+      self.log = f'{reason} — Draw game! (Trajectory saved)'
       self._finalize_trajectory(winner_idx=None, winner_type=None)
     else:
       self.turn = (self.turn + 1) % self.num_players

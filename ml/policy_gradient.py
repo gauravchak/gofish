@@ -261,6 +261,17 @@ class PolicyGradientBot(BotPolicy):
 
     return float(critic_loss.item())
 
+  def clone_frozen(self, label=None):
+    """Returns a frozen greedy copy of this bot for Hall-of-Fame league sparring."""
+    snap = PolicyGradientBot(hidden_dim=self.critic.hidden_dim)
+    snap.draw_actor.load_state_dict(self.draw_actor.state_dict())
+    snap.discard_actor.load_state_dict(self.discard_actor.state_dict())
+    snap.critic.load_state_dict(self.critic.state_dict())
+    snap.stochastic = False
+    if label:
+      snap.name = label
+    return snap
+
   def save(self, path, metadata=None):
     self.metadata = metadata or self.metadata
     save_checkpoint(
