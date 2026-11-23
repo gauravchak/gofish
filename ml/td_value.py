@@ -1,16 +1,19 @@
-"""Model 1: PyTorch TD(lambda) Value-Based RL Player (TD-Gammon / AlphaZero-lite).
+"""Model 1: PyTorch TD(lambda) Value-Based RL Player with Live Target Network.
 
 Core RL idea:
   - Trains a PyTorch CardMLP V(s) -> (0, 1) to predict win probability from any
     6-card post-discard hand ('afterstate').
+  - Maintains a slow-moving Target Network (tau=0.005) so Experience Replay
+    always recomputes FRESH bootstrap targets instead of training on stale
+    targets from weaker earlier generations!
   - At play time:
       * DISCARD: scores all legal candidate 6-card hands in one PyTorch batch
         and picks the highest predicted win probability.
       * DRAW: compares taking Shown ('S') against the average predicted value
         of drawing an unseen card from Hidden ('T').
-  - Learning rule: TD(lambda) backward returns + Binary Cross-Entropy + Adam.
 """
 
+import copy
 import os
 import random
 
@@ -40,7 +43,7 @@ def _evenly_spaced(items, max_count):
 
 
 class TDValueBot(BotPolicy):
-  """PyTorch RL Bot #1: learns a 6-card afterstate value network via TD(lambda)."""
+  """PyTorch RL Bot #1: learns a 6-card afterstate value network via live TD + MC."""
 
   name = 'RL Bot — TD Value (PyTorch)'
   player_type = 'bot:rl_td_value'
@@ -48,29 +51,36 @@ class TDValueBot(BotPolicy):
   def __init__(
       self,
       model_path=None,
-      hidden_dim=32,
+      hidden_dim=64,
       gamma=0.96,
-      lam=0.70,
-      lr=0.003,
+      lam=0.35,
+      target_tau=0.005,
+      lr=0.0012,
       seed=101,
   ):
     self.gamma = gamma
     self.lam = lam
+    self.target_tau = target_tau
     self.epsilon = 0.0
+    self.explore_temp = 0.0
     self._rng = random.Random(seed)
     self.metadata = {}
 
+    loaded = False
     if model_path and os.path.exists(model_path):
       ckpt = load_checkpoint(model_path)
-      cfg = ckpt['config']
-      self.net = CardMLP(
-          input_dim=cfg['input_dim'],
-          hidden_dim=cfg['hidden_dim'],
-          output_activation='sigmoid',
-      )
-      self.net.load_state_dict(ckpt['net_state'])
-      self.metadata = ckpt.get('metadata', {})
-    else:
+      cfg = ckpt.get('config', {})
+      if cfg.get('input_dim') == AFTERSTATE_DIM and 'net_state' in ckpt:
+        self.net = CardMLP(
+            input_dim=cfg['input_dim'],
+            hidden_dim=cfg['hidden_dim'],
+            output_activation='sigmoid',
+        )
+        self.net.load_state_dict(ckpt['net_state'])
+        self.metadata = ckpt.get('metadata', {})
+        loaded = True
+
+    if not loaded:
       torch.manual_seed(seed)
       self.net = CardMLP(
           input_dim=AFTERSTATE_DIM,
@@ -78,6 +88,8 @@ class TDValueBot(BotPolicy):
           output_activation='sigmoid',
       )
 
+    # Soft-updated target network prevents stale replay targets & stabilizes TD!
+    self.target_net = copy.deepcopy(self.net)
     self.optimizer = torch.optim.Adam(
         self.net.parameters(), lr=lr, weight_decay=1e-4
     )
@@ -85,6 +97,13 @@ class TDValueBot(BotPolicy):
   def set_lr(self, lr):
     for group in self.optimizer.param_groups:
       group['lr'] = lr
+
+  @torch.no_grad()
+  def _soft_update_target(self):
+    for p_target, p_online in zip(
+        self.target_net.parameters(), self.net.parameters()
+    ):
+      p_target.lerp_(p_online, self.target_tau)
 
   def _best_afterstate_value(
       self,
@@ -223,53 +242,103 @@ class TDValueBot(BotPolicy):
       pick = self._rng.randrange(len(cids))
     else:
       vals = self.net.predict_batch(feat_rows)
-      ranked = sorted(range(len(vals)), key=lambda idx: vals[idx], reverse=True)
-      pick = ranked[0]
-      if len(ranked) >= 2:
-        alt = ranked[1]
-        self.last_thought = (
-            f'Put down {card_label(id_to_card(cids[pick]))} '
-            f'({100*vals[pick]:.0f}% win prob vs '
-            f'{card_label(id_to_card(cids[alt]))} {100*vals[alt]:.0f}%)'
-        )
+      if self.explore_temp > 0.0 and len(vals) > 1:
+        # Boltzmann exploration: explores competitive discards without random blunders!
+        probs = torch.softmax(
+            torch.tensor(vals, dtype=torch.float32) / self.explore_temp, dim=-1
+        ).tolist()
+        r = self._rng.random()
+        acc = 0.0
+        pick = len(vals) - 1
+        for idx, p in enumerate(probs):
+          acc += p
+          if r <= acc:
+            pick = idx
+            break
+      else:
+        ranked = sorted(range(len(vals)), key=lambda idx: vals[idx], reverse=True)
+        pick = ranked[0]
+        if len(ranked) >= 2:
+          alt = ranked[1]
+          self.last_thought = (
+              f'Put down {card_label(id_to_card(cids[pick]))} '
+              f'({100*vals[pick]:.0f}% win prob vs '
+              f'{card_label(id_to_card(cids[alt]))} {100*vals[alt]:.0f}%)'
+          )
 
     card = id_to_card(cids[pick])
     return (card, feat_rows[pick]) if return_features else card
 
   def build_episode_samples(self, afterstate_features, outcome):
-    """Returns [(feats, td_target), ...] for pushing into a ReplayBuffer."""
+    """Returns live replay transitions [(s_t, s_next_or_None, mc_target_t), ...].
+
+    CRITICAL RL FIX: We store the next-state features s_{t+1} instead of baking
+    in a frozen TD target from old weights. That way train_batch() always
+    bootstraps from our LIVE target_net — zero stale targets in ReplayBuffer!
+    """
     if not afterstate_features:
       return []
-    with torch.no_grad():
-      v_vals = self.net.predict_batch(afterstate_features)
-      n = len(afterstate_features)
-      targets = [0.0] * n
-      targets[-1] = float(outcome)
-      for t in range(n - 2, -1, -1):
-        next_v = 0.5 + self.gamma * (v_vals[t + 1] - 0.5)
-        next_ret = 0.5 + self.gamma * (targets[t + 1] - 0.5)
-        targets[t] = (1.0 - self.lam) * next_v + self.lam * next_ret
-    return list(zip(afterstate_features, targets))
+    n = len(afterstate_features)
+    mc_targets = [0.0] * n
+    mc_targets[-1] = float(outcome)
+    for t in range(n - 2, -1, -1):
+      mc_targets[t] = 0.5 + self.gamma * (mc_targets[t + 1] - 0.5)
+
+    transitions = []
+    for t in range(n):
+      nxt = afterstate_features[t + 1] if t + 1 < n else None
+      transitions.append((afterstate_features[t], nxt, mc_targets[t]))
+    return transitions
 
   def train_batch(self, samples, lr=None):
-    """Mini-batch PyTorch BCE update on [(feats, target), ...] from ReplayBuffer."""
+    """Mini-batch PyTorch BCE update using LIVE target_net bootstrapping."""
     if not samples:
       return 0.0
     if lr is not None:
       self.set_lr(lr)
 
-    x = torch.tensor([s[0] for s in samples], dtype=torch.float32)
-    y = torch.tensor([s[1] for s in samples], dtype=torch.float32)
+    x_rows = []
+    targets = []
+    next_indices = []
+    next_rows = []
+
+    for idx, item in enumerate(samples):
+      if len(item) == 2:
+        # Backward-compatible 2-tuple (feats, direct_target) e.g. from human logs
+        x_rows.append(item[0])
+        targets.append(float(item[1]))
+      else:
+        feats, nxt_feats, mc_target = item
+        x_rows.append(feats)
+        targets.append(float(mc_target))
+        if nxt_feats is not None:
+          next_indices.append(idx)
+          next_rows.append(nxt_feats)
+
+    if next_rows:
+      with torch.no_grad():
+        next_vs = self.target_net(
+            torch.tensor(next_rows, dtype=torch.float32)
+        ).tolist()
+      for list_pos, sample_idx in enumerate(next_indices):
+        boot_v = 0.5 + self.gamma * (next_vs[list_pos] - 0.5)
+        targets[sample_idx] = (
+            (1.0 - self.lam) * boot_v + self.lam * targets[sample_idx]
+        )
+
+    x = torch.tensor(x_rows, dtype=torch.float32)
+    y = torch.tensor(targets, dtype=torch.float32).clamp(0.0, 1.0)
     preds = self.net(x)
     loss = F.binary_cross_entropy(preds.clamp(1e-6, 1.0 - 1e-6), y)
     self.optimizer.zero_grad()
     loss.backward()
     nn.utils.clip_grad_norm_(self.net.parameters(), 2.0)
     self.optimizer.step()
+    self._soft_update_target()
     return float(loss.item())
 
   def learn_episode(self, afterstate_features, outcome, lr=None):
-    """Updates V(s) from one player's episode using PyTorch TD(lambda) + Adam."""
+    """Updates V(s) from one player's episode using live target-net TD + Adam."""
     samples = self.build_episode_samples(afterstate_features, outcome)
     return self.train_batch(samples, lr=lr)
 
@@ -277,6 +346,7 @@ class TDValueBot(BotPolicy):
     """Returns a frozen copy of this bot for Hall-of-Fame league sparring."""
     snap = TDValueBot(hidden_dim=self.net.hidden_dim)
     snap.net.load_state_dict(self.net.state_dict())
+    snap.target_net.load_state_dict(self.net.state_dict())
     snap.epsilon = 0.0
     if label:
       snap.name = label

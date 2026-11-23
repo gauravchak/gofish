@@ -85,8 +85,8 @@
   <script>
     const TRACKED = [
       {key: 'rl_alphazero', label: 'RL + Tree (AlphaZero-Lite)', color: '#ffbe0b'},
-      {key: 'rl_policy_gradient', label: 'RL Policy Gradient', color: '#80ed99'},
-      {key: 'rl_q_learning', label: 'RL Q-Learning', color: '#4cc9f0'},
+      {key: 'rl_policy_gradient', label: 'RL PPO Policy Gradient', color: '#80ed99'},
+      {key: 'rl_q_learning', label: 'RL Double DQN', color: '#4cc9f0'},
       {key: 'rl_td_value', label: 'RL TD Value', color: '#f77f00'},
       {key: 'heuristic', label: 'Heuristic Bot', color: '#ff8fa3'},
       {key: 'tree_1ply', label: 'Tree Bot (1-Level)', color: '#c77dff'},
@@ -328,9 +328,11 @@
           c.style.cursor = 'pointer';
           c.onmouseenter = () => {
             const vh = h.vs_heuristic && h.vs_heuristic[t.key] !== null
-              ? ` · ${h.vs_heuristic[t.key]}% vs Heuristic` : '';
+              ? ` · ${h.vs_heuristic[t.key]}% vs Heur` : '';
+            const vt = h.vs_tree1 && h.vs_tree1[t.key] !== null
+              ? ` · ${h.vs_tree1[t.key]}% vs Tree1` : '';
             document.getElementById('chartTooltip').innerText =
-              `Gen ${h.generation} (${h.games_total.toLocaleString()} games) — ${t.label}: ${Math.round(h.elos[t.key])} Elo (${h.win_rates[t.key]}% overall${vh})`;
+              `Gen ${h.generation} (${h.games_total.toLocaleString()} games) — ${t.label}: ${Math.round(h.elos[t.key])} Elo (${h.win_rates[t.key]}% overall${vh}${vt})`;
           };
           svg.appendChild(c);
         });
@@ -359,7 +361,7 @@
       const tbl = document.createElement('table');
       const thead = document.createElement('thead');
       const hr = document.createElement('tr');
-      ['Gen (Games)', 'AZ Hybrid', 'PG (A2C)', 'Q-Learn', 'TD Value', 'Heuristic', 'Tree 1-Ply', 'Tree 2-Ply'].forEach((h) => {
+      ['Gen (Games)', 'AlphaZero', 'PPO', 'Double DQN', 'TD Value', 'Heuristic', 'Tree 1-Ply', 'Tree 2-Ply'].forEach((h) => {
         const th = document.createElement('th'); th.innerText = h; hr.appendChild(th);
       });
       thead.appendChild(hr); tbl.appendChild(thead);

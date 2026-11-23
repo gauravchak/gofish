@@ -34,7 +34,7 @@ RL_MODEL_PATHS = {
     'rl_td_value': os.path.join(MODELS_DIR, 'td_value_model.pt'),
     'rl_q_learning': os.path.join(MODELS_DIR, 'q_learning_model.pt'),
     'rl_policy_gradient': os.path.join(MODELS_DIR, 'policy_gradient_model.pt'),
-    'rl_alphazero': os.path.join(MODELS_DIR, 'td_value_model.pt'),
+    'rl_alphazero': os.path.join(MODELS_DIR, 'alphazero_model.pt'),
 }
 
 _BASE_BOT_OPTIONS = (
@@ -48,8 +48,8 @@ _BASE_BOT_OPTIONS = (
 
 _RL_BOT_OPTIONS = (
     {'key': 'rl_td_value', 'label': '🧠 RL Bot — TD Value (PyTorch)'},
-    {'key': 'rl_q_learning', 'label': '🧠 RL Bot — Q-Learning (PyTorch)'},
-    {'key': 'rl_policy_gradient', 'label': '🧠 RL Bot — Policy Gradient (PyTorch)'},
+    {'key': 'rl_q_learning', 'label': '🧠 RL Bot — Double DQN (PyTorch)'},
+    {'key': 'rl_policy_gradient', 'label': '🧠 RL Bot — PPO Policy Gradient (PyTorch)'},
     {'key': 'rl_alphazero', 'label': '🧠 RL + Tree Bot (AlphaZero-Lite)'},
 )
 

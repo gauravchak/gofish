@@ -39,6 +39,12 @@ AFTERSTATE_FEATURE_NAMES = (
     'cross_partition_win_outs',
     'is_ready_hand',
     'hand_connectedness',
+    # Opponent Memory & Table Defense features (break through the 19-feature ceiling!)
+    'opp_danger_exact',
+    'opp_shown_pair_synergy',
+    'dead_cards_fraction',
+    'safe_discard_score',
+    'second_group_live_outs',
 )
 
 ACTION_FEATURE_NAMES = AFTERSTATE_FEATURE_NAMES + (
@@ -140,7 +146,7 @@ def extract_afterstate_features(
     discarded_id=None,
     took_shown=False,
 ):
-  """Builds the 19-element normalized feature vector for a 6-card afterstate."""
+  """Builds the 24-element normalized feature vector for a 6-card afterstate."""
   (
       complete,
       one_away,
@@ -155,13 +161,49 @@ def extract_afterstate_features(
 
   helps_next = 0
   matches_next_disc = 0
+  opp_danger_exact = 0.0
+  opp_shown_synergy = 0
+  wanted_list = list(next_wanted)
+
+  # Measure how synergistic the next opponent's publicly picked Shown cards are!
+  nw_len = len(wanted_list)
+  for i in range(nw_len):
+    for j in range(i + 1, nw_len):
+      completers = pair_completers(wanted_list[i], wanted_list[j])
+      if completers:
+        opp_shown_synergy += 1
+        if discarded_id is not None and (completers & (1 << discarded_id)):
+          # CRITICAL DEFENSE: this discard completes a known 2-card proto-set for opponent!
+          opp_danger_exact = 1.0
+
   if discarded_id is not None:
-    for wid in next_wanted:
+    for wid in wanted_list:
       if pair_completers(discarded_id, wid):
         helps_next += 1
     for did in next_discarded:
       if pair_completers(discarded_id, did):
         matches_next_disc += 1
+
+  # Safe discard: doesn't connect with any opponent Shown pickup, bonus if matching
+  # cards the opponent already threw away.
+  if discarded_id is None:
+    safe_discard = 0.5
+  elif opp_danger_exact > 0.0:
+    safe_discard = 0.0
+  elif helps_next == 0 and matches_next_disc > 0:
+    safe_discard = 1.0
+  elif helps_next == 0:
+    safe_discard = 0.7
+  else:
+    safe_discard = 0.2
+
+  # Fraction of the 52-card deck already permanently seen/dead (excluding our 6 cards).
+  unseen_count = unseen_mask.bit_count()
+  dead_cards_frac = max(0.0, min(1.0, (46 - unseen_count) / 40.0))
+
+  # Live outs specifically for our weaker (second) group when we have 0 complete sets,
+  # or for our remaining incomplete group when we have 1 complete set.
+  second_group_outs = min_live if complete == 0 else max_live
 
   return [
       1.0,                                     # bias
@@ -178,11 +220,16 @@ def extract_afterstate_features(
       min(deck_remaining, 40) / 40.0,          # deck_fraction
       min(helps_next, 2) / 2.0,                # discard_helps_next
       min(matches_next_disc, 2) / 2.0,         # discard_matches_next_discard
-      min(len(next_wanted), 3) / 3.0,          # opp_shown_picks
+      min(nw_len, 3) / 3.0,                    # opp_shown_picks
       1.0 if took_shown else 0.0,              # took_shown
       min(win_outs, 8) / 8.0,                  # cross_partition_win_outs
       1.0 if win_outs >= 1 else 0.0,           # is_ready_hand (1 draw from winning!)
       min(live_pairs, 6) / 6.0,                # hand_connectedness
+      opp_danger_exact,                        # opp_danger_exact
+      min(opp_shown_synergy, 3) / 3.0,         # opp_shown_pair_synergy
+      dead_cards_frac,                         # dead_cards_fraction
+      safe_discard,                            # safe_discard_score
+      min(second_group_outs, 4) / 4.0,         # second_group_live_outs
   ]
 
 
@@ -255,7 +302,7 @@ def extract_action_features(
     shown_id = obs['shown_card_id']
     hand7 = hand6 + [shown_id]
     best_vec = None
-    best_key = (-1.0, -1.0, -1.0)
+    best_key = (-1.0,) * 6
     for i in range(6):  # Index 6 is shown_id (forbidden to re-discard this turn)
       h6 = hand7[:i] + hand7[i + 1 :]
       vec = extract_afterstate_features(
@@ -267,7 +314,7 @@ def extract_action_features(
           discarded_id=hand7[i],
           took_shown=True,
       )
-      key = (vec[1], vec[2], vec[4] + vec[5])
+      key = (vec[1], vec[2], vec[17], vec[16], vec[4] + vec[5], vec[22])
       if key > best_key:
         best_key = key
         best_vec = vec
