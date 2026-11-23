@@ -13,6 +13,7 @@ class BotPolicy:
 
   name = 'Bot'
   player_type = 'bot:base'
+  last_thought = ''
 
   def choose_draw(self, obs):
     """Returns 'S' (Shown pile) or 'T' (Hidden deck) from obs['legal_actions']."""

@@ -17,7 +17,7 @@ import torch.nn.functional as F
 
 from bots.base import BotPolicy
 from bots.heuristic import is_winning_hand_ids
-from game.rules import id_to_card
+from game.rules import card_label, id_to_card
 from ml.features import ACTION_DIM, extract_all_action_features
 from ml.nn import CardMLP, load_checkpoint, save_checkpoint
 
@@ -101,6 +101,12 @@ class QLearningBot(BotPolicy):
     else:
       q_vals = self.draw_net.predict_batch(all_feats)
       chosen_idx = max(range(len(q_vals)), key=lambda idx: q_vals[idx])
+      if len(legal) == 2:
+        other_idx = 1 - chosen_idx
+        self.last_thought = (
+            f'Chose {"Shown" if legal[chosen_idx] == "S" else "Hidden"} '
+            f'(Q={q_vals[chosen_idx]:+.2f} vs {q_vals[other_idx]:+.2f})'
+        )
 
     rec = {'phase': 'DRAW', 'feats': all_feats[chosen_idx], 'all_feats': all_feats}
     return (legal[chosen_idx], rec) if return_record else legal[chosen_idx]
@@ -121,7 +127,15 @@ class QLearningBot(BotPolicy):
       chosen_idx = self._rng.randrange(len(legal_ids))
     else:
       q_vals = self.discard_net.predict_batch(all_feats)
-      chosen_idx = max(range(len(q_vals)), key=lambda idx: q_vals[idx])
+      ranked = sorted(range(len(q_vals)), key=lambda idx: q_vals[idx], reverse=True)
+      chosen_idx = ranked[0]
+      if len(ranked) >= 2:
+        alt = ranked[1]
+        self.last_thought = (
+            f'Put down {card_label(id_to_card(legal_ids[chosen_idx]))} '
+            f'(Q={q_vals[chosen_idx]:+.2f} vs '
+            f'{card_label(id_to_card(legal_ids[alt]))} {q_vals[alt]:+.2f})'
+        )
 
     card = id_to_card(legal_ids[chosen_idx])
     rec = {'phase': 'DISCARD', 'feats': all_feats[chosen_idx], 'all_feats': all_feats}

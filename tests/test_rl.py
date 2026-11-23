@@ -180,6 +180,45 @@ class TestPyTorchRLBots(unittest.TestCase):
     az = AlphaZeroLiteBot(td_bot=snap, draw_sample=4)
     self.assertEqual(az.player_type, 'bot:rl_alphazero')
 
+  def test_bot_thoughts_and_human_replay_loader(self):
+    from scripts.league import load_offline_td_samples
+    from game import TrajectoryLogger
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+      path = os.path.join(tmpdir, 'human.jsonl')
+      logger = TrajectoryLogger(path)
+      eng = GameEngine(logger=logger)
+      bots = [create_bot('rl_alphazero'), create_bot('rl_policy_gradient')]
+      eng.join_player('b0', bots[0].name, player_type=bots[0].player_type)
+      eng.join_player('b1', bots[1].name, player_type=bots[1].player_type)
+      eng.start_match(seed=19)
+
+      for _ in range(4):
+        if eng.winner is not None:
+          break
+        p = eng.turn
+        obs = eng.get_observation(p)
+        if eng.phase == 'DRAW':
+          act = bots[p].choose_draw(obs)
+          eng.draw(p, act)
+        else:
+          act = bots[p].choose_discard(obs)
+          eng.discard(p, act, by_index=False)
+        self.assertTrue(len(bots[p].last_thought) > 0)
+
+      # Finish match and verify offline human-trajectory loader reads DISCARD samples
+      while eng.winner is None:
+        p = eng.turn
+        obs = eng.get_observation(p)
+        if eng.phase == 'DRAW':
+          eng.draw(p, bots[p].choose_draw(obs))
+        else:
+          eng.discard(p, bots[p].choose_discard(obs), by_index=False)
+
+      samples = load_offline_td_samples(path)
+      self.assertGreater(len(samples), 0)
+      self.assertEqual(len(samples[0][0]), AFTERSTATE_DIM)
+
 
 if __name__ == '__main__':
   unittest.main()

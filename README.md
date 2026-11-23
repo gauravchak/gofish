@@ -190,11 +190,14 @@ Want to watch all three PyTorch RL bots **play against each other** and track wh
 
 ```bash
 python3 -m scripts.league --generations 6 --games-per-gen 2000
+# Or include your family's real games from trajectories.jsonl in the Replay Buffer!
+python3 -m scripts.league --generations 6 --games-per-gen 2000 --include-human trajectories.jsonl
 ```
 
 Each generation plays 2,000 bot-vs-bot games (RL vs RL + frozen Hall-of-Fame past champions + Heuristic & Tree bots), trains `TD Value` and `Q-Learning` with a **PyTorch Experience Replay Buffer (`batch_size=64`)**, evaluates all 9 players on the same fixed-seed benchmark, and uses **King-of-the-Hill gating** (only saving a new `.pt` checkpoint when Elo beats its previous best!).
 
-Then click **`📊 Bot League`** in the lobby (or visit `http://localhost:7171/league`) to view the Elo-over-Generations chart!
+- **View Elo Progress:** Click **`📊 Bot League`** in the lobby (or visit `http://localhost:7171/league`) to see the live SVG Elo-over-Generations chart.
+- **Watch Bots Battle Live (Spectator Arena):** Add any 2–4 computer players in the lobby without joining as a human and click **Start Game**! You can adjust **Bot Speed** (`Slow` / `Normal` / `Fast`), see every bot's cards live, and read the **🧠 Bot Brain** box explaining why each bot chose its move (fairness check: Bot Brain & open bot hands are automatically hidden whenever a human is playing!).
 
 ### 6-Generation League Progression (12,000 Games)
 | Generation | Games | 🧠 RL + Tree (AlphaZero-Lite) | 🧠 Policy Gradient | 🧠 Q-Learning | 🧠 TD Value | Heuristic | Tree 1-Ply |

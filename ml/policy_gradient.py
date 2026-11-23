@@ -19,7 +19,7 @@ import torch.nn.functional as F
 
 from bots.base import BotPolicy
 from bots.heuristic import is_winning_hand_ids
-from game.rules import id_to_card
+from game.rules import card_label, id_to_card
 from ml.features import ACTION_DIM, AFTERSTATE_DIM, extract_all_action_features
 from ml.nn import CardMLP, load_checkpoint, save_checkpoint
 
@@ -95,13 +95,24 @@ class PolicyGradientBot(BotPolicy):
       group['lr'] = critic_lr
 
   @torch.no_grad()
-  def _pick_from_actor(self, actor, all_feats):
+  def _pick_from_actor(self, actor, all_feats, labels=None):
     x = torch.tensor(all_feats, dtype=torch.float32)
     logits = actor(x)
+    probs = torch.softmax(logits / max(self.temperature, 1e-3), dim=-1).tolist()
     if self.stochastic:
       dist = Categorical(logits=logits / max(self.temperature, 1e-3))
-      return int(dist.sample().item())
-    return int(torch.argmax(logits).item())
+      chosen_idx = int(dist.sample().item())
+    else:
+      chosen_idx = int(torch.argmax(logits).item())
+
+    if labels and len(labels) >= 2 and not self.stochastic:
+      ranked = sorted(range(len(probs)), key=lambda i: probs[i], reverse=True)
+      top, alt = ranked[0], ranked[1]
+      self.last_thought = (
+          f'Picked {labels[top]} ({100*probs[top]:.0f}% policy prob vs '
+          f'{labels[alt]} {100*probs[alt]:.0f}%)'
+      )
+    return chosen_idx
 
   def choose_draw(self, obs, return_record=False):
     legal, all_feats = extract_all_action_features(obs)
@@ -130,7 +141,10 @@ class PolicyGradientBot(BotPolicy):
         }
         return ('S', rec) if return_record else 'S'
 
-    chosen_idx = self._pick_from_actor(self.draw_actor, all_feats)
+    draw_labels = ['Shown' if a == 'S' else 'Hidden' for a in legal]
+    chosen_idx = self._pick_from_actor(
+        self.draw_actor, all_feats, labels=draw_labels
+    )
     rec = {
         'phase': 'DRAW',
         'state_feats': pre_state,
@@ -158,7 +172,10 @@ class PolicyGradientBot(BotPolicy):
         }
         return (card, rec) if return_record else card
 
-    chosen_idx = self._pick_from_actor(self.discard_actor, all_feats)
+    disc_labels = [card_label(id_to_card(cid)) for cid in legal_ids]
+    chosen_idx = self._pick_from_actor(
+        self.discard_actor, all_feats, labels=disc_labels
+    )
     card = id_to_card(legal_ids[chosen_idx])
     rec = {
         'phase': 'DISCARD',

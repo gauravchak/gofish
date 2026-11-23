@@ -25,7 +25,7 @@ from bots.heuristic import (
     opponent_danger,
     score_hand,
 )
-from game.rules import id_to_card
+from game.rules import card_label, id_to_card
 
 
 def _evenly_spaced_sample(items, max_count):
@@ -170,6 +170,7 @@ class TreeBot(BotPolicy):
         hand_with_shown, unseen_mask, forbidden_id=shown_id
     )
     if imm_shown >= WIN_SCORE:
+      self.last_thought = 'Took Shown — completes a winning hand!'
       return 'S'
 
     if self.depth == 1:
@@ -197,7 +198,13 @@ class TreeBot(BotPolicy):
         val_hidden = -1e9
 
     if val_shown - self.shown_info_cost > val_hidden:
+      self.last_thought = (
+          f'Took Shown ({self.depth}-ply expected {val_shown:.1f} vs Hidden {val_hidden:.1f})'
+      )
       return 'S'
+    self.last_thought = (
+        f'Drew Hidden ({self.depth}-ply expected {val_hidden:.1f} vs Shown {val_shown:.1f})'
+    )
     return 'T'
 
   def choose_discard(self, obs):
@@ -215,7 +222,9 @@ class TreeBot(BotPolicy):
       hand6 = hand7[:i] + hand7[i + 1 :]
       imm = score_hand(hand6, unseen_mask)
       if imm >= WIN_SCORE:
-        return id_to_card(cid)
+        card = id_to_card(cid)
+        self.last_thought = f'Put down {card_label(card)} — winning hand!'
+        return card
 
       exp1 = _expected_one_turn_value(hand6, unseen_ids, unseen_mask)
       danger = opponent_danger(cid, next_wanted, next_discarded)
@@ -224,17 +233,27 @@ class TreeBot(BotPolicy):
 
     scored_candidates.sort(key=lambda item: item[0], reverse=True)
     if self.depth == 1:
-      return id_to_card(scored_candidates[0][1])
+      card = id_to_card(scored_candidates[0][1])
+      if len(scored_candidates) >= 2:
+        self.last_thought = (
+            f'Put down {card_label(card)} (1-ply {scored_candidates[0][0]:.1f} vs '
+            f'{card_label(id_to_card(scored_candidates[1][1]))} {scored_candidates[1][0]:.1f})'
+        )
+      return card
 
     # Step 2 (depth=2): Refine the top 3 discards with 2-level lookahead.
-    best_cid = scored_candidates[0][1]
-    best_val2 = -1e9
+    refined = []
     for _, cid, hand6, danger in scored_candidates[:3]:
       val2 = _expected_two_turn_value(
           hand6, unseen_ids, unseen_mask, gamma=self.gamma
       ) - self.danger_weight * 1.5 * danger
-      if val2 > best_val2:
-        best_val2 = val2
-        best_cid = cid
+      refined.append((val2, cid))
 
-    return id_to_card(best_cid)
+    refined.sort(key=lambda item: item[0], reverse=True)
+    card = id_to_card(refined[0][1])
+    if len(refined) >= 2:
+      self.last_thought = (
+          f'Put down {card_label(card)} (2-ply {refined[0][0]:.1f} vs '
+          f'{card_label(id_to_card(refined[1][1]))} {refined[1][0]:.1f})'
+      )
+    return card
