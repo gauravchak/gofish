@@ -26,7 +26,7 @@ from bots.heuristic import (
     is_winning_hand_ids,
     mask_to_ids,
 )
-from game.rules import id_to_card
+from game.rules import card_label, id_to_card
 from ml.features import AFTERSTATE_DIM, extract_afterstate_features
 from ml.nn import CardMLP, load_checkpoint, save_checkpoint
 
@@ -141,6 +141,7 @@ class TDValueBot(BotPolicy):
         took_shown=True,
     )
     if val_shown >= 1.0:
+      self.last_thought = 'Took Shown — completes a winning hand!'
       return 'S'
 
     # Branch 2: Draw Hidden ('T') — expected value over unseen cards.
@@ -179,7 +180,15 @@ class TDValueBot(BotPolicy):
         brick_count * base_val + len(relevant_ids) * avg_rel
     ) / len(unseen_ids)
 
-    return 'S' if val_shown > val_hidden else 'T'
+    if val_shown > val_hidden:
+      self.last_thought = (
+          f'Took Shown (win prob {100*val_shown:.0f}% vs Hidden {100*val_hidden:.0f}%)'
+      )
+      return 'S'
+    self.last_thought = (
+        f'Drew Hidden (win prob {100*val_hidden:.0f}% vs Shown {100*val_shown:.0f}%)'
+    )
+    return 'T'
 
   def choose_discard(self, obs, return_features=False):
     hand7 = obs['hand_ids']
@@ -214,7 +223,15 @@ class TDValueBot(BotPolicy):
       pick = self._rng.randrange(len(cids))
     else:
       vals = self.net.predict_batch(feat_rows)
-      pick = max(range(len(vals)), key=lambda idx: vals[idx])
+      ranked = sorted(range(len(vals)), key=lambda idx: vals[idx], reverse=True)
+      pick = ranked[0]
+      if len(ranked) >= 2:
+        alt = ranked[1]
+        self.last_thought = (
+            f'Put down {card_label(id_to_card(cids[pick]))} '
+            f'({100*vals[pick]:.0f}% win prob vs '
+            f'{card_label(id_to_card(cids[alt]))} {100*vals[alt]:.0f}%)'
+        )
 
     card = id_to_card(cids[pick])
     return (card, feat_rows[pick]) if return_features else card

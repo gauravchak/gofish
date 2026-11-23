@@ -17,7 +17,7 @@ Precomputing those 100 sets lets us score any 6-card hand in microseconds by:
 from itertools import combinations
 
 from bots.base import BotPolicy
-from game.rules import card_to_id, id_to_card
+from game.rules import card_label, card_to_id, id_to_card
 
 ALL_CARDS_MASK = (1 << 52) - 1
 
@@ -254,11 +254,18 @@ class HeuristicBot(BotPolicy):
     )
 
     if if_take_shown >= WIN_SCORE:
+      self.last_thought = 'Took Shown — completes a winning hand!'
       return 'S'
 
     # Take Shown if it meaningfully improves our hand (beyond the info-reveal cost).
     if if_take_shown - self.shown_info_cost > current_score + 4.0:
+      self.last_thought = (
+          f'Took Shown (hand score {if_take_shown:.1f} vs current {current_score:.1f})'
+      )
       return 'S'
+    self.last_thought = (
+        f'Drew Hidden (Shown would score {if_take_shown:.1f} vs current {current_score:.1f})'
+    )
     return 'T'
 
   def choose_discard(self, obs):
@@ -267,20 +274,28 @@ class HeuristicBot(BotPolicy):
     unseen_mask = get_unseen_mask(obs)
     next_wanted, next_discarded = get_next_player_hints(obs)
 
-    best_card_id = None
-    best_value = -1e9
+    scored = []
     for i, cid in enumerate(hand7):
       if cid not in legal_ids:
         continue
       hand6 = hand7[:i] + hand7[i + 1 :]
       hand_score = score_hand(hand6, unseen_mask)
       if hand_score >= WIN_SCORE:
-        return id_to_card(cid)
+        card = id_to_card(cid)
+        self.last_thought = f'Put down {card_label(card)} — winning hand!'
+        return card
       value = hand_score - self.danger_weight * opponent_danger(
           cid, next_wanted, next_discarded
       )
-      if value > best_value:
-        best_value = value
-        best_card_id = cid
+      scored.append((value, cid))
 
-    return id_to_card(best_card_id)
+    scored.sort(key=lambda item: item[0], reverse=True)
+    best_val, best_cid = scored[0]
+    card = id_to_card(best_cid)
+    if len(scored) >= 2:
+      alt_val, alt_cid = scored[1]
+      self.last_thought = (
+          f'Put down {card_label(card)} (score {best_val:.1f} vs '
+          f'{card_label(id_to_card(alt_cid))} {alt_val:.1f})'
+      )
+    return card

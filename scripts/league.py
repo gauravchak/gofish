@@ -16,6 +16,7 @@ Run:
 """
 
 import argparse
+import gzip
 import json
 import os
 import random
@@ -37,6 +38,58 @@ from ml import (
 )
 
 LEAGUE_HISTORY_PATH = os.path.join(MODELS_DIR, 'league_history.json')
+
+
+def load_offline_td_samples(path):
+  """Loads completed DISCARD steps from a .jsonl/.jsonl.gz file as (feats, outcome_01).
+
+  Lets families mix their own real games from trajectories.jsonl right into the
+  PyTorch Replay Buffer alongside self-play!
+  """
+  if not path or not os.path.exists(path):
+    return []
+  opener = (
+      (lambda p: gzip.open(p, 'rt', encoding='utf-8'))
+      if path.endswith('.gz')
+      else (lambda p: open(p, 'r', encoding='utf-8'))
+  )
+  samples = []
+  with opener(path) as f:
+    for line in f:
+      line = line.strip()
+      if not line:
+        continue
+      try:
+        rec = json.loads(line)
+      except json.JSONDecodeError:
+        continue
+      if rec.get('phase') != 'DISCARD' or 'hand_ids' not in rec:
+        continue
+      cid = rec.get('action_id')
+      hand7 = rec['hand_ids']
+      if cid not in hand7 or len(hand7) != 7:
+        continue
+      idx = hand7.index(cid)
+      h6 = hand7[:idx] + hand7[idx + 1 :]
+      obs_view = {
+          'player': rec['player'],
+          'num_players': rec['num_players'],
+          'hand_ids': hand7,
+          'discard_pile_ids': rec.get('discard_pile_ids', []),
+          'public_history': rec.get('public_history', []),
+      }
+      feats = extract_afterstate_features(
+          h6,
+          get_unseen_mask(obs_view),
+          rec.get('deck_remaining', 20),
+          *get_next_player_hints(obs_view),
+          discarded_id=cid,
+          took_shown=rec.get('last_picked_shown_id') is not None,
+      )
+      rew = float(rec.get('reward', 0.0))
+      outcome_01 = 1.0 if rew > 0 else (0.0 if rew < 0 else 0.5)
+      samples.append((feats, outcome_01))
+  return samples
 
 
 def _update_elo(elos, key_a, key_b, winner_slot, k=20.0):
@@ -235,7 +288,7 @@ def evaluate_generation(
   return elos, wins, played, vs_heur
 
 
-def run_league(generations=6, games_per_gen=2000, seed=42):
+def run_league(generations=6, games_per_gen=2000, seed=42, include_human=None):
   """Trains all 3 PyTorch RL bots in a generational bot-vs-bot league."""
   torch.set_num_threads(1)
   rng = random.Random(seed)
@@ -248,6 +301,14 @@ def run_league(generations=6, games_per_gen=2000, seed=42):
 
   td_replay = ReplayBuffer(capacity=25000)
   q_replay = ReplayBuffer(capacity=25000)
+  if include_human:
+    human_samples = load_offline_td_samples(include_human)
+    if human_samples:
+      td_replay.extend(human_samples)
+      print(
+          f'Seeded TD Replay Buffer with {len(human_samples)} steps from {include_human}',
+          flush=True,
+      )
   hall_of_fame = []  # Frozen past champions for diverse league sparring
 
   fixed = {
@@ -457,11 +518,17 @@ def main():
   parser.add_argument('--generations', type=int, default=6)
   parser.add_argument('--games-per-gen', type=int, default=2000)
   parser.add_argument('--seed', type=int, default=42)
+  parser.add_argument(
+      '--include-human',
+      default=None,
+      help='Optional .jsonl/.jsonl.gz of family games to seed the Replay Buffer.',
+  )
   args = parser.parse_args()
   run_league(
       generations=args.generations,
       games_per_gen=args.games_per_gen,
       seed=args.seed,
+      include_human=args.include_human,
   )
 
 

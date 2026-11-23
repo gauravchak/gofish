@@ -15,7 +15,7 @@ app = Flask(__name__)
 LOG_FILE = 'trajectories.jsonl'
 FAMILY_FILE = 'family.json'
 LEAGUE_HISTORY_FILE = os.path.join(MODELS_DIR, 'league_history.json')
-BOT_STEP_DELAY_SECONDS = 0.65
+BOT_SPEED_PRESETS = {'slow': 1.25, 'normal': 0.65, 'fast': 0.18}
 
 game_lock = threading.Lock()
 trajectory_logger = TrajectoryLogger(LOG_FILE)
@@ -26,6 +26,8 @@ engine = GameEngine(logger=trajectory_logger, family_store=family_store)
 bot_policies = {}
 bot_counter = 0
 bot_worker_running = False
+bot_speed_key = 'normal'
+last_bot_thought = ''
 
 
 def get_client_ip():
@@ -44,7 +46,7 @@ def get_json_body():
 
 def _bot_turn_loop():
   """Background worker that plays computer turns one paced step at a time."""
-  global bot_worker_running
+  global bot_worker_running, last_bot_thought
   try:
     while True:
       with game_lock:
@@ -60,6 +62,7 @@ def _bot_turn_loop():
         expected_step = engine.step_count
         phase = engine.phase
         obs = engine.get_observation(current_idx)
+        step_delay = BOT_SPEED_PRESETS.get(bot_speed_key, 0.65)
 
       # Pause briefly and compute the bot's decision outside game_lock so the UI
       # stays responsive and humans can clearly see each DRAW and DISCARD step.
@@ -69,7 +72,8 @@ def _bot_turn_loop():
           if phase == 'DRAW'
           else policy.choose_discard(obs)
       )
-      remaining_delay = BOT_STEP_DELAY_SECONDS - (time.monotonic() - t0)
+      thought = getattr(policy, 'last_thought', '')
+      remaining_delay = step_delay - (time.monotonic() - t0)
       if remaining_delay > 0:
         time.sleep(remaining_delay)
 
@@ -87,6 +91,8 @@ def _bot_turn_loop():
           engine.draw(current_idx, action)
         else:
           engine.discard(current_idx, action, by_index=False)
+        if thought:
+          last_bot_thought = f'{current_player["name"]}: {thought}'
   finally:
     with game_lock:
       bot_worker_running = False
@@ -236,9 +242,22 @@ def quick_play_route():
   return jsonify({'ok': ok})
 
 
+@app.route('/bot_speed', methods=['POST'])
+def bot_speed_route():
+  global bot_speed_key
+  speed = get_json_body().get('speed', 'normal')
+  if speed not in BOT_SPEED_PRESETS:
+    return jsonify({'ok': False, 'error': 'Invalid speed preset.'})
+  with game_lock:
+    bot_speed_key = speed
+  return jsonify({'ok': True, 'speed': bot_speed_key})
+
+
 @app.route('/start', methods=['POST'])
 def start_route():
+  global last_bot_thought
   with game_lock:
+    last_bot_thought = ''
     ok = engine.start_match()
   if ok:
     schedule_bot_turn_if_needed()
@@ -247,7 +266,9 @@ def start_route():
 
 @app.route('/rematch', methods=['POST'])
 def rematch_route():
+  global last_bot_thought
   with game_lock:
+    last_bot_thought = ''
     ok = engine.rematch()
   if ok:
     schedule_bot_turn_if_needed()
@@ -256,18 +277,45 @@ def rematch_route():
 
 @app.route('/restart', methods=['POST'])
 def restart_route():
+  global last_bot_thought
   with game_lock:
     engine.reset_lobby()
     bot_policies.clear()
+    last_bot_thought = ''
   return jsonify({'ok': True})
 
 
 @app.route('/state')
 def get_state():
+  from game.rules import card_label, sort_cards
+
   ip = get_client_ip()
   with game_lock:
     state = engine.get_ui_state(ip)
     state['bot_options'] = list(BOT_OPTIONS)
+    state['bot_speed'] = bot_speed_key
+
+    # Fairness check: only expose Bot Brain thoughts and open bot hands when
+    # EVERY seat is a computer player (Bot-vs-Bot Arena) or after the game ends.
+    is_bot_arena = bool(
+        engine.started
+        and engine.players
+        and all(p['type'].startswith('bot:') for p in engine.players)
+    )
+    state['is_bot_arena'] = is_bot_arena
+    state['bot_thought'] = (
+        last_bot_thought if (is_bot_arena or engine.winner is not None) else ''
+    )
+    if is_bot_arena:
+      state['arena_hands'] = [
+          {
+              'name': p['name'],
+              'cards': [card_label(c) for c in sort_cards(engine.hands[idx])],
+          }
+          for idx, p in enumerate(engine.players)
+      ]
+    else:
+      state['arena_hands'] = []
   return jsonify(state)
 
 
@@ -347,6 +395,10 @@ HTML_PAGE = """
     .elo-banner { margin: 10px 0; font-size: 14px; color: #d8f3dc; }
     .delta-up { color: #80ed99; font-weight: bold; }
     .delta-down { color: #ff8fa3; font-weight: bold; }
+    .brain-box { background: rgba(255,209,102,0.14); border: 1px solid rgba(255,209,102,0.4); border-radius: 10px; padding: 8px 12px; margin: 10px auto; font-size: 13px; color: #ffd166; max-width: 520px; }
+    .speed-btn { font-size: 12px; padding: 5px 10px; background: rgba(255,255,255,0.16); color: white; }
+    .speed-btn-active { background: #e9c46a; color: black; }
+    .arena-hand { margin: 8px 0; padding: 8px; background: rgba(255,255,255,0.08); border-radius: 10px; }
   </style>
 </head>
 <body>
@@ -400,6 +452,13 @@ HTML_PAGE = """
     <div class="box">
       <div id="lockedPlayerBadge" style="font-size: 18px; font-weight: bold; margin-bottom: 6px;"></div>
       <div id="gamePlayersBar" class="roster"></div>
+      <div id="botArenaBar" style="display: none; margin: 6px 0;">
+        <span style="font-size: 13px; color: #a8dadc;">🏟️ Bot Speed:</span>
+        <button id="speedSlow" class="speed-btn" onclick="post('/bot_speed', {speed: 'slow'})">Slow</button>
+        <button id="speedNormal" class="speed-btn" onclick="post('/bot_speed', {speed: 'normal'})">Normal</button>
+        <button id="speedFast" class="speed-btn" onclick="post('/bot_speed', {speed: 'fast'})">Fast</button>
+      </div>
+      <div id="botBrainBox" class="brain-box" style="display: none;"></div>
       <div id="log" style="color: #a8dadc;"></div>
       <div id="status" class="status"></div>
       <div id="winningHandBox" style="display: none; margin: 12px 0; padding: 10px; background: rgba(255,255,255,0.12); border-radius: 10px;">
@@ -419,10 +478,15 @@ HTML_PAGE = """
       </div>
     </div>
 
-    <div class="box">
+    <div class="box" id="myHandBox">
       <div id="handPrompt">Your Hand (Tap a card to move it to the front of your hand):</div>
       <div id="hand"></div>
       <div id="actionHint" class="hint"></div>
+    </div>
+
+    <div class="box" id="arenaHandsBox" style="display: none;">
+      <div style="font-size: 14px; color: #ffd166; font-weight: bold; margin-bottom: 6px;">👀 Bot-vs-Bot Live Hands (Spectator Mode)</div>
+      <div id="arenaHandsList"></div>
     </div>
 
     <div class="box" id="recentMovesBox" style="display: none;">
@@ -709,7 +773,48 @@ HTML_PAGE = """
       const mySeat = (data.my_player !== null && data.players) ? data.players[data.my_player] : null;
       badge.innerText = mySeat
         ? `🔒 Playing as ${data.my_name} (Elo ${Math.round(mySeat.elo)})`
-        : `👀 Spectating (Game already started)`;
+        : (data.is_bot_arena ? `🏟️ Spectating Bot-vs-Bot Arena` : `👀 Spectating (Game already started)`);
+
+      const hasAnyBot = (data.players || []).some((p) => p.is_bot);
+      document.getElementById('botArenaBar').style.display = hasAnyBot ? 'block' : 'none';
+      ['slow', 'normal', 'fast'].forEach((sp) => {
+        const btn = document.getElementById('speed' + sp[0].toUpperCase() + sp.slice(1));
+        if (btn) btn.className = 'speed-btn' + (data.bot_speed === sp ? ' speed-btn-active' : '');
+      });
+
+      const brainBox = document.getElementById('botBrainBox');
+      if (data.bot_thought) {
+        brainBox.style.display = 'block';
+        brainBox.innerText = '🧠 Bot Brain — ' + data.bot_thought;
+      } else {
+        brainBox.style.display = 'none';
+      }
+
+      document.getElementById('myHandBox').style.display = data.my_player !== null ? 'block' : 'none';
+      const arenaBox = document.getElementById('arenaHandsBox');
+      const arenaList = document.getElementById('arenaHandsList');
+      if (data.is_bot_arena && data.arena_hands && data.arena_hands.length) {
+        arenaBox.style.display = 'block';
+        arenaList.innerHTML = '';
+        data.arena_hands.forEach((ah) => {
+          const wrap = document.createElement('div');
+          wrap.className = 'arena-hand';
+          const title = document.createElement('div');
+          title.style.fontSize = '13px';
+          title.style.color = '#a8dadc';
+          title.innerText = '🤖 ' + ah.name;
+          wrap.appendChild(title);
+          ah.cards.forEach((lbl) => {
+            const c = document.createElement('div');
+            c.className = 'card card-sm ' + colorClass(lbl);
+            c.innerText = lbl;
+            wrap.appendChild(c);
+          });
+          arenaList.appendChild(wrap);
+        });
+      } else {
+        arenaBox.style.display = 'none';
+      }
 
       // Show every player and their live Elo rating during the match.
       const playersBar = document.getElementById('gamePlayersBar');

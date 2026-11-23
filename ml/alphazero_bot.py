@@ -16,7 +16,7 @@ from bots.heuristic import (
     is_winning_hand_ids,
     mask_to_ids,
 )
-from game.rules import id_to_card
+from game.rules import card_label, id_to_card
 from ml.features import extract_afterstate_features
 from ml.td_value import TDValueBot
 
@@ -156,7 +156,15 @@ class AlphaZeroLiteBot(BotPolicy):
     val_hidden = self._expected_next_turn_value(
         hand6, unseen_ids, unseen_mask, deck_rem, next_wanted, next_discarded
     )
-    return 'S' if val_shown > val_hidden else 'T'
+    if val_shown > val_hidden:
+      self.last_thought = (
+          f'Took Shown (RL+Tree {100*val_shown:.0f}% vs Hidden {100*val_hidden:.0f}%)'
+      )
+      return 'S'
+    self.last_thought = (
+        f'Drew Hidden (RL+Tree {100*val_hidden:.0f}% vs Shown {100*val_shown:.0f}%)'
+    )
+    return 'T'
 
   def choose_discard(self, obs):
     hand7 = obs['hand_ids']
@@ -197,8 +205,7 @@ class AlphaZeroLiteBot(BotPolicy):
     )
 
     # Step 2: Run 1-level Expectimax lookahead on the top 2 candidate discards!
-    best_cid = cids[ranked[0]]
-    best_score = -1.0
+    refined = []
     for idx in ranked[:2]:
       lookahead_v = self._expected_next_turn_value(
           h6_list[idx],
@@ -210,8 +217,13 @@ class AlphaZeroLiteBot(BotPolicy):
       )
       # Blend immediate neural value (includes opponent-danger feature!) with 1-ply lookahead.
       combined = 0.45 * imm_vals[idx] + 0.55 * lookahead_v
-      if combined > best_score:
-        best_score = combined
-        best_cid = cids[idx]
+      refined.append((combined, cids[idx]))
 
-    return id_to_card(best_cid)
+    refined.sort(key=lambda item: item[0], reverse=True)
+    card = id_to_card(refined[0][1])
+    if len(refined) >= 2:
+      self.last_thought = (
+          f'Put down {card_label(card)} (RL+Tree {100*refined[0][0]:.0f}% vs '
+          f'{card_label(id_to_card(refined[1][1]))} {100*refined[1][0]:.0f}%)'
+      )
+    return card
