@@ -219,6 +219,88 @@ class TestPyTorchRLBots(unittest.TestCase):
       self.assertGreater(len(samples), 0)
       self.assertEqual(len(samples[0][0]), AFTERSTATE_DIM)
 
+  def test_opponent_memory_danger_feature_and_ppo_ddqn_alphazero_training(self):
+    from ml.features import AFTERSTATE_FEATURE_NAMES, extract_afterstate_features
+    from scripts.league import _solve_balanced_elos
+
+    # 1. Verify opp_danger_exact fires when discarding the 3rd card of opponent's Shown pair!
+    # Opponent picked 7♥ (id=6) and 7♦ (id=19); discarding 7♣ (id=32) completes 7-7-7!
+    danger_idx = AFTERSTATE_FEATURE_NAMES.index('opp_danger_exact')
+    safe_idx = AFTERSTATE_FEATURE_NAMES.index('safe_discard_score')
+    hand6 = [0, 1, 2, 10, 20, 30]
+    unseen = ((1 << 52) - 1) ^ sum(1 << c for c in hand6)
+    f_danger = extract_afterstate_features(
+        hand6, unseen, 30, next_wanted={6, 19}, next_discarded=set(), discarded_id=32
+    )
+    f_safe = extract_afterstate_features(
+        hand6, unseen, 30, next_wanted={6, 19}, next_discarded={40}, discarded_id=41
+    )
+    self.assertEqual(f_danger[danger_idx], 1.0)
+    self.assertEqual(f_safe[danger_idx], 0.0)
+    self.assertGreater(f_safe[safe_idx], f_danger[safe_idx])
+
+    # 2. Verify PPO batch learning + AlphaZero self-play policy/value training + save/reload
+    az = AlphaZeroLiteBot(hidden_dim=16, draw_sample=2, top_k_discards=2, seed=9)
+    az.stochastic = True
+    pg = PolicyGradientBot(hidden_dim=16, seed=8)
+    pg.stochastic = True
+
+    pg_eps = []
+    az_vals, az_pols = [], []
+    for s in (101, 102):
+      eng = GameEngine()
+      eng.join_player('p0', az.name, player_type=az.player_type)
+      eng.join_player('p1', pg.name, player_type=pg.player_type)
+      eng.start_match(seed=s)
+      az_s, az_after, pg_s = [], [], []
+      while eng.winner is None:
+        p = eng.turn
+        obs = eng.get_observation(p)
+        if p == 0:
+          if eng.phase == 'DRAW':
+            act, rec = az.choose_draw(obs, return_search=True)
+            az_s.append(rec)
+            eng.draw(p, act)
+          else:
+            act, rec = az.choose_discard(obs, return_search=True)
+            az_s.append(rec)
+            az_after.append(rec['after_feats'])
+            eng.discard(p, act, by_index=False)
+        else:
+          if eng.phase == 'DRAW':
+            act, rec = pg.choose_draw(obs, return_record=True)
+            pg_s.append(rec)
+            eng.draw(p, act)
+          else:
+            act, rec = pg.choose_discard(obs, return_record=True)
+            pg_s.append(rec)
+            eng.discard(p, act, by_index=False)
+      out_az = 1.0 if eng.winner_idx == 0 else (0.0 if eng.winner_idx == 1 else 0.5)
+      rew_pg = 1.0 if eng.winner_idx == 1 else (-1.0 if eng.winner_idx == 0 else 0.0)
+      vs, ps = az.build_selfplay_samples(az_s, az_after, out_az)
+      az_vals.extend(vs)
+      az_pols.extend(ps)
+      pg_eps.append((pg_s, rew_pg))
+
+    self.assertGreaterEqual(pg.learn_ppo_batch(pg_eps, ppo_epochs=2), 0.0)
+    self.assertGreaterEqual(az.value_bot.train_batch(az_vals, lr=0.001), 0.0)
+    self.assertGreaterEqual(az.train_policy_batch(az_pols, lr=0.001), 0.0)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+      az_path = os.path.join(tmpdir, 'az.pt')
+      az.save(az_path, metadata={'generation': 1})
+      reloaded = AlphaZeroLiteBot(model_path=az_path)
+      self.assertEqual(reloaded.metadata['generation'], 1)
+
+    # 3. Verify Bradley-Terry balanced Elo solver is order-independent!
+    res = [('a', 'b', 0), ('a', 'b', 0), ('b', 'c', 0), ('a', 'c', 0)]
+    e1 = _solve_balanced_elos(['a', 'b', 'c'], res)
+    e2 = _solve_balanced_elos(['a', 'b', 'c'], list(reversed(res)))
+    for k in ('a', 'b', 'c'):
+      self.assertAlmostEqual(e1[k], e2[k], places=4)
+    self.assertGreater(e1['a'], e1['b'])
+    self.assertGreater(e1['b'], e1['c'])
+
 
 if __name__ == '__main__':
   unittest.main()
