@@ -1,5 +1,6 @@
 """Unit tests for rules, headless GameEngine, and leak-free TrajectoryLogger."""
 
+import gzip
 import json
 import os
 import tempfile
@@ -257,6 +258,32 @@ class TestEngineAndTrajectories(unittest.TestCase):
     self.assertEqual(len(eng.players), 2)
     self.assertEqual(eng.player_name(0), 'Alice')
     self.assertEqual(eng.player_name(1), 'Bob')
+
+  def test_compact_gzip_logger_appends_and_reloads(self):
+    with tempfile.TemporaryDirectory() as tmpdir:
+      gz_path = os.path.join(tmpdir, 'bulk.jsonl.gz')
+      logger = TrajectoryLogger(gz_path, compact=True)
+      eng = GameEngine(logger=logger)
+      eng.join_player('p0', 'Alice')
+      eng.join_player('p1', 'Bob')
+
+      for seed in (1, 2):
+        eng.rematch(seed=seed)
+        while eng.winner is None:
+          p = eng.turn
+          if eng.phase == 'DRAW':
+            eng.draw(p, 'T')
+          else:
+            obs = eng.get_observation(p)
+            eng.discard(p, obs['legal_actions'][0], by_index=False)
+
+      self.assertEqual(logger.saved_games, 2)
+      self.assertEqual(TrajectoryLogger(gz_path, compact=True).saved_games, 2)
+      with gzip.open(gz_path, 'rt', encoding='utf-8') as f:
+        rows = [json.loads(line) for line in f if line.strip()]
+      self.assertGreater(len(rows), 0)
+      self.assertNotIn('public_history', rows[0])
+      self.assertIn('hand_ids', rows[0])
 
 
 if __name__ == '__main__':

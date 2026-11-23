@@ -1,5 +1,6 @@
 # Local game data (never push personal family profiles or raw trajectories)
 *.jsonl
+*.jsonl.gz
 family.json
 
 # Byte-compiled / optimized / DLL files

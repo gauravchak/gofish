@@ -1,50 +1,27 @@
-"""Model 3: Actor-Critic Policy Gradient RL Player (REINFORCE with Value Baseline).
+"""Model 3: PyTorch Advantage Actor-Critic (A2C) Policy Gradient RL Player.
 
 Core RL idea:
   - Actor (Policy pi(a|s)): scores every legal action with a logit z(s, a) and
-    turns scores into probabilities via masked softmax.
-  - Critic (Value baseline V(s)): estimates expected return from state s.
-  - Advantage: A_t = G_t - V(s_t) ('did this move turn out better or worse than
-    the Critic expected?').
-      * If A_t > 0, nudge the chosen action's logit UP (and others slightly down).
-      * If A_t < 0, nudge the chosen action's logit DOWN.
-  - Plus a tiny entropy bonus during training so the policy keeps exploring!
+    builds a PyTorch Categorical distribution over legal actions.
+  - Critic (Value baseline V(s)): estimates expected return from the PRE-ACTION
+    state s_t (never peeking at the chosen action a_t!).
+  - Advantage: A_t = target_t - V(s_t).
+  - Actor loss:  -(dist.log_prob(chosen) * A_t.detach()) - entropy_coef * dist.entropy()
+  - Critic loss: MSE(V(s_t), target_t)
 """
 
-import json
-import math
 import os
-import random
+
+import torch
+from torch.distributions import Categorical
+import torch.nn as nn
+import torch.nn.functional as F
 
 from bots.base import BotPolicy
 from bots.heuristic import is_winning_hand_ids
 from game.rules import id_to_card
-from ml.features import (
-    ACTION_DIM,
-    AFTERSTATE_DIM,
-    extract_all_action_features,
-    extract_state_features,
-)
-from ml.nn import TinyMLP
-
-
-def _masked_softmax(logits, temperature=1.0):
-  temp = max(temperature, 1e-3)
-  scaled = [z / temp for z in logits]
-  m = max(scaled)
-  exps = [math.exp(max(min(v - m, 30.0), -30.0)) for v in scaled]
-  total = sum(exps)
-  return [e / total for e in exps]
-
-
-def _sample_categorical(probs, rng):
-  r = rng.random()
-  cumulative = 0.0
-  for idx, p in enumerate(probs):
-    cumulative += p
-    if r <= cumulative:
-      return idx
-  return len(probs) - 1
+from ml.features import ACTION_DIM, AFTERSTATE_DIM, extract_all_action_features
+from ml.nn import CardMLP, load_checkpoint, save_checkpoint
 
 
 def _pre_action_state_feats(all_feats):
@@ -52,9 +29,8 @@ def _pre_action_state_feats(all_feats):
 
   CRITICAL RL RULE: The Critic baseline V(s_t) must depend ONLY on the pre-action
   state s_t — NEVER on the chosen action a_t! Using the post-action features of
-  a_t biases the advantage A_t = G_t - V(s_t, a_t) and can invert learning!
+  a_t biases the advantage A_t = G_t - V(s_t, a_t) and can invert learning.
   """
-  # Pick the strongest achievable legal afterstate as the canonical pre-action summary.
   best = all_feats[0]
   best_key = (best[1], best[2], best[4], best[5])
   for f in all_feats[1:]:
@@ -66,68 +42,74 @@ def _pre_action_state_feats(all_feats):
 
 
 class PolicyGradientBot(BotPolicy):
-  """RL Bot #3: Actor-Critic Policy Gradient (separate DRAW & DISCARD actors + Critic)."""
+  """PyTorch RL Bot #3: Advantage Actor-Critic (A2C) using torch.distributions.Categorical."""
 
-  name = 'RL Bot — Policy Gradient'
+  name = 'RL Bot — Policy Gradient (PyTorch)'
   player_type = 'bot:rl_policy_gradient'
 
   def __init__(
       self,
       model_path=None,
-      hidden_dim=16,
+      hidden_dim=32,
       gamma=0.95,
-      entropy_coef=0.01,
+      entropy_coef=0.015,
+      actor_lr=0.002,
+      critic_lr=0.003,
       seed=303,
   ):
     self.gamma = gamma
     self.entropy_coef = entropy_coef
-    self.stochastic = False  # True during training; greedy/low-temp at play time
+    self.stochastic = False
     self.temperature = 1.0
-    self._rng = random.Random(seed)
     self.metadata = {}
 
     if model_path and os.path.exists(model_path):
-      with open(model_path, 'r', encoding='utf-8') as f:
-        payload = json.load(f)
-      self.draw_actor = TinyMLP.from_dict(payload['draw_actor'])
-      self.discard_actor = TinyMLP.from_dict(payload['discard_actor'])
-      self.critic = TinyMLP.from_dict(payload['critic'])
-      self.metadata = payload.get('metadata', {})
+      ckpt = load_checkpoint(model_path)
+      cfg = ckpt['config']
+      self.draw_actor = CardMLP(cfg['action_dim'], cfg['hidden_dim'], 'linear')
+      self.discard_actor = CardMLP(cfg['action_dim'], cfg['hidden_dim'], 'linear')
+      self.critic = CardMLP(cfg['state_dim'], cfg['hidden_dim'], 'tanh')
+      self.draw_actor.load_state_dict(ckpt['draw_actor_state'])
+      self.discard_actor.load_state_dict(ckpt['discard_actor_state'])
+      self.critic.load_state_dict(ckpt['critic_state'])
+      self.metadata = ckpt.get('metadata', {})
     else:
-      self.draw_actor = TinyMLP(
-          input_dim=ACTION_DIM,
-          hidden_dim=hidden_dim,
-          output_activation='linear',
-          seed=seed,
-      )
-      self.discard_actor = TinyMLP(
-          input_dim=ACTION_DIM,
-          hidden_dim=hidden_dim,
-          output_activation='linear',
-          seed=seed + 1,
-      )
-      self.critic = TinyMLP(
-          input_dim=AFTERSTATE_DIM,
-          hidden_dim=hidden_dim,
-          output_activation='tanh',
-          seed=seed + 2,
-      )
+      torch.manual_seed(seed)
+      self.draw_actor = CardMLP(ACTION_DIM, hidden_dim, 'linear')
+      self.discard_actor = CardMLP(ACTION_DIM, hidden_dim, 'linear')
+      self.critic = CardMLP(AFTERSTATE_DIM, hidden_dim, 'tanh')
 
+    self.actor_opt = torch.optim.Adam(
+        list(self.draw_actor.parameters()) + list(self.discard_actor.parameters()),
+        lr=actor_lr,
+        weight_decay=1e-4,
+    )
+    self.critic_opt = torch.optim.Adam(
+        self.critic.parameters(), lr=critic_lr, weight_decay=1e-4
+    )
+
+  def set_lrs(self, actor_lr, critic_lr):
+    for group in self.actor_opt.param_groups:
+      group['lr'] = actor_lr
+    for group in self.critic_opt.param_groups:
+      group['lr'] = critic_lr
+
+  @torch.no_grad()
   def _pick_from_actor(self, actor, all_feats):
-    logits = [actor.predict(f) for f in all_feats]
-    probs = _masked_softmax(logits, temperature=self.temperature)
+    x = torch.tensor(all_feats, dtype=torch.float32)
+    logits = actor(x)
     if self.stochastic:
-      chosen_idx = _sample_categorical(probs, self._rng)
-    else:
-      chosen_idx = max(range(len(logits)), key=lambda i: logits[i])
-    return chosen_idx, probs
+      dist = Categorical(logits=logits / max(self.temperature, 1e-3))
+      return int(dist.sample().item())
+    return int(torch.argmax(logits).item())
 
   def choose_draw(self, obs, return_record=False):
     legal, all_feats = extract_all_action_features(obs)
+    pre_state = all_feats[0][:AFTERSTATE_DIM]
     if len(legal) == 1:
       rec = {
           'phase': 'DRAW',
-          'state_feats': all_feats[0][:AFTERSTATE_DIM],
+          'state_feats': pre_state,
           'all_action_feats': all_feats,
           'chosen_idx': 0,
       }
@@ -142,16 +124,16 @@ class PolicyGradientBot(BotPolicy):
         s_idx = legal.index('S')
         rec = {
             'phase': 'DRAW',
-            'state_feats': all_feats[0][:AFTERSTATE_DIM],
+            'state_feats': pre_state,
             'all_action_feats': all_feats,
             'chosen_idx': s_idx,
         }
         return ('S', rec) if return_record else 'S'
 
-    chosen_idx, _ = self._pick_from_actor(self.draw_actor, all_feats)
+    chosen_idx = self._pick_from_actor(self.draw_actor, all_feats)
     rec = {
         'phase': 'DRAW',
-        'state_feats': all_feats[0][:AFTERSTATE_DIM],
+        'state_feats': pre_state,
         'all_action_feats': all_feats,
         'chosen_idx': chosen_idx,
     }
@@ -176,7 +158,7 @@ class PolicyGradientBot(BotPolicy):
         }
         return (card, rec) if return_record else card
 
-    chosen_idx, _ = self._pick_from_actor(self.discard_actor, all_feats)
+    chosen_idx = self._pick_from_actor(self.discard_actor, all_feats)
     card = id_to_card(legal_ids[chosen_idx])
     rec = {
         'phase': 'DISCARD',
@@ -187,94 +169,111 @@ class PolicyGradientBot(BotPolicy):
     }
     return (card, rec) if return_record else card
 
-  def train_critic_only(self, state_feats_list, reward, critic_lr=0.015, l2=1e-4):
-    """Updates Critic V(s) using TD(lambda) targets (can learn from both seats!)."""
+  def train_critic_only(self, state_feats_list, reward, critic_lr=None):
+    """Updates Critic V(s) on opponent afterstates for a balanced baseline."""
     if not state_feats_list:
       return 0.0
-    n = len(state_feats_list)
-    preds = [self.critic.predict(f) for f in state_feats_list]
-    targets = [0.0] * n
-    targets[-1] = reward
-    lam = 0.65
-    for t in range(n - 2, -1, -1):
-      targets[t] = (1.0 - lam) * (self.gamma * preds[t + 1]) + lam * (
-          self.gamma * targets[t + 1]
-      )
-    loss = 0.0
-    for f, target in zip(state_feats_list, targets):
-      loss += self.critic.train_step(f, target, lr=critic_lr, l2=l2)
-    return loss / n
+    if critic_lr is not None:
+      for group in self.critic_opt.param_groups:
+        group['lr'] = critic_lr
 
-  def learn_episode(self, steps, reward, actor_lr=0.012, critic_lr=0.018, l2=1e-4):
-    """Advantage Actor-Critic (A2C) update over one player's episode.
+    x = torch.tensor(state_feats_list, dtype=torch.float32)
+    preds = self.critic(x)
+    with torch.no_grad():
+      n = len(state_feats_list)
+      v_vals = preds.tolist()
+      targets = [0.0] * n
+      targets[-1] = float(reward)
+      lam = 0.65
+      for t in range(n - 2, -1, -1):
+        targets[t] = (1.0 - lam) * (self.gamma * v_vals[t + 1]) + lam * (
+            self.gamma * targets[t + 1]
+        )
+      target_t = torch.tensor(targets, dtype=torch.float32)
 
-    Uses TD advantage A_t = (gamma * V(s_{t+1}) - V(s_t)) blended with discounted
-    Monte Carlo return so the Actor gets immediate step-by-step feedback even
-    when a single game's final win/loss is noisy!
-    """
+    loss = F.mse_loss(preds, target_t)
+    self.critic_opt.zero_grad()
+    loss.backward()
+    nn.utils.clip_grad_norm_(self.critic.parameters(), 2.0)
+    self.critic_opt.step()
+    return float(loss.item())
+
+  def learn_episode(self, steps, reward, actor_lr=None, critic_lr=None):
+    """PyTorch Advantage Actor-Critic (A2C) update over one player's episode."""
     if not steps:
       return 0.0
+    if actor_lr is not None and critic_lr is not None:
+      self.set_lrs(actor_lr, critic_lr)
 
-    n = len(steps)
-    v_preds = [self.critic.predict(s['state_feats']) for s in steps]
+    state_x = torch.tensor([s['state_feats'] for s in steps], dtype=torch.float32)
+    v_preds = self.critic(state_x)
 
-    # Compute TD(lambda) return targets for Critic & low-variance TD advantages for Actor.
-    targets = [0.0] * n
-    targets[-1] = reward
-    lam = 0.65
-    for idx in range(n - 2, -1, -1):
-      step_gamma = 0.99 if steps[idx]['phase'] == 'DRAW' else self.gamma
-      targets[idx] = (1.0 - lam) * (step_gamma * v_preds[idx + 1]) + lam * (
-          step_gamma * targets[idx + 1]
-      )
+    # Build TD(lambda) targets and low-variance TD advantages.
+    with torch.no_grad():
+      n = len(steps)
+      v_list = v_preds.tolist()
+      targets = [0.0] * n
+      targets[-1] = float(reward)
+      lam = 0.65
+      for idx in range(n - 2, -1, -1):
+        step_gamma = 0.99 if steps[idx]['phase'] == 'DRAW' else self.gamma
+        targets[idx] = (1.0 - lam) * (step_gamma * v_list[idx + 1]) + lam * (
+            step_gamma * targets[idx + 1]
+        )
+      target_t = torch.tensor(targets, dtype=torch.float32)
+      advantages = target_t - v_preds.detach()
 
-    total_critic_loss = 0.0
+    # 1. Update Critic toward TD(lambda) targets.
+    critic_loss = F.mse_loss(v_preds, target_t)
+    self.critic_opt.zero_grad()
+    critic_loss.backward()
+    nn.utils.clip_grad_norm_(self.critic.parameters(), 2.0)
+    self.critic_opt.step()
+
+    # 2. Update Actor using PyTorch Categorical log_prob + entropy bonus!
+    actor_losses = []
+    temp = max(self.temperature, 1e-3)
     for idx, step in enumerate(steps):
-      state_feats = step['state_feats']
-      v_pred = v_preds[idx]
-      # TD Advantage: how much better/worse did this action's continuation turn out
-      # than the Critic expected before the action?
-      advantage = targets[idx] - v_pred
-
-      # 1. Update Critic toward TD(lambda) target.
-      total_critic_loss += self.critic.train_step(
-          state_feats, targets[idx], lr=critic_lr, l2=l2
-      )
-
-      # 2. Update Actor using exact masked-softmax policy gradient:
-      #    dL/dz_k = A_t * (pi_k - 1[k == chosen]) / temperature
       all_feats = step['all_action_feats']
       if len(all_feats) <= 1:
         continue
       actor = (
           self.draw_actor if step['phase'] == 'DRAW' else self.discard_actor
       )
-      caches = [actor.forward_with_cache(f) for f in all_feats]
-      logits = [out for out, _ in caches]
-      probs = _masked_softmax(logits, temperature=self.temperature)
-      chosen = step['chosen_idx']
+      logits = actor(torch.tensor(all_feats, dtype=torch.float32)) / temp
+      dist = Categorical(logits=logits)
+      chosen = torch.tensor(step['chosen_idx'], dtype=torch.long)
+      step_loss = -(dist.log_prob(chosen) * advantages[idx]) - (
+          self.entropy_coef * dist.entropy()
+      )
+      actor_losses.append(step_loss)
 
-      entropy_terms = [-(math.log(max(p, 1e-9)) + 1.0) for p in probs]
-      mean_ent = sum(p * e for p, e in zip(probs, entropy_terms))
+    if actor_losses:
+      actor_loss = torch.stack(actor_losses).mean()
+      self.actor_opt.zero_grad()
+      actor_loss.backward()
+      nn.utils.clip_grad_norm_(
+          list(self.draw_actor.parameters())
+          + list(self.discard_actor.parameters()),
+          2.0,
+      )
+      self.actor_opt.step()
 
-      for k, ((_, h_k), f_k, p_k) in enumerate(zip(caches, all_feats, probs)):
-        indicator = 1.0 if k == chosen else 0.0
-        d_pg = advantage * (p_k - indicator) / max(self.temperature, 1e-3)
-        d_ent = -self.entropy_coef * p_k * (entropy_terms[k] - mean_ent)
-        actor.apply_output_gradient(f_k, h_k, d_pg + d_ent, lr=actor_lr, l2=l2)
-
-    return total_critic_loss / n
+    return float(critic_loss.item())
 
   def save(self, path, metadata=None):
     self.metadata = metadata or self.metadata
-    parent = os.path.dirname(os.path.abspath(path))
-    os.makedirs(parent, exist_ok=True)
-    payload = {
-        'draw_actor': self.draw_actor.to_dict(),
-        'discard_actor': self.discard_actor.to_dict(),
-        'critic': self.critic.to_dict(),
-        'metadata': self.metadata,
-    }
-    with open(path, 'w', encoding='utf-8') as f:
-      json.dump(payload, f, indent=2)
-      f.write('\n')
+    save_checkpoint(
+        path,
+        {
+            'config': {
+                'action_dim': self.draw_actor.input_dim,
+                'state_dim': self.critic.input_dim,
+                'hidden_dim': self.critic.hidden_dim,
+            },
+            'draw_actor_state': self.draw_actor.state_dict(),
+            'discard_actor_state': self.discard_actor.state_dict(),
+            'critic_state': self.critic.state_dict(),
+            'metadata': self.metadata,
+        },
+    )

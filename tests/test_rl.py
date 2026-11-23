@@ -1,42 +1,32 @@
-"""Unit tests for the zero-dependency ML/RL stack (TinyMLP, features, and 3 RL bots)."""
+"""Unit tests for the PyTorch ML/RL stack (CardMLP, features, and 3 RL bots)."""
 
 import os
 import tempfile
 import unittest
 
-from bots import create_bot
+from bots import HAS_TORCH, create_bot
 from game import GameEngine
-from ml import (
+from ml.features import (
     ACTION_DIM,
     AFTERSTATE_DIM,
-    PolicyGradientBot,
-    QLearningBot,
-    TDValueBot,
-    TinyMLP,
     extract_action_features,
     extract_state_features,
 )
 
+if HAS_TORCH:
+  import torch
+  import torch.nn.functional as F
+  from ml import (
+      CardMLP,
+      PolicyGradientBot,
+      QLearningBot,
+      TDValueBot,
+      load_checkpoint,
+      save_checkpoint,
+  )
 
-class TestTinyMLPAndFeatures(unittest.TestCase):
 
-  def test_tiny_mlp_learns_simple_pattern_and_roundtrips_json(self):
-    net = TinyMLP(input_dim=2, hidden_dim=8, output_activation='sigmoid', seed=7)
-    data = [([1.0, 0.0], 1.0), ([0.0, 1.0], 0.0), ([1.0, 1.0], 1.0), ([0.0, 0.0], 0.0)]
-    for _ in range(150):
-      for x, y in data:
-        net.train_step(x, y, lr=0.1, l2=0.0)
-    self.assertGreater(net.predict([1.0, 0.0]), 0.85)
-    self.assertLess(net.predict([0.0, 1.0]), 0.15)
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-      path = os.path.join(tmpdir, 'test_net.json')
-      net.save(path, metadata={'note': 'unit-test'})
-      loaded, meta = TinyMLP.load(path)
-      self.assertEqual(meta['note'], 'unit-test')
-      self.assertAlmostEqual(
-          net.predict([1.0, 0.0]), loaded.predict([1.0, 0.0]), places=4
-      )
+class TestFeatures(unittest.TestCase):
 
   def test_feature_dimensions(self):
     eng = GameEngine()
@@ -56,7 +46,40 @@ class TestTinyMLPAndFeatures(unittest.TestCase):
     self.assertEqual(len(extract_action_features(obs_disc, cid)), ACTION_DIM)
 
 
-class TestRLBots(unittest.TestCase):
+@unittest.skipUnless(HAS_TORCH, 'PyTorch not installed')
+class TestPyTorchRLBots(unittest.TestCase):
+
+  def test_card_mlp_learns_pattern_and_roundtrips_safe_checkpoint(self):
+    torch.manual_seed(7)
+    net = CardMLP(input_dim=2, hidden_dim=16, output_activation='sigmoid')
+    opt = torch.optim.Adam(net.parameters(), lr=0.05)
+    x = torch.tensor(
+        [[1.0, 0.0], [0.0, 1.0], [1.0, 1.0], [0.0, 0.0]], dtype=torch.float32
+    )
+    y = torch.tensor([1.0, 0.0, 1.0, 0.0], dtype=torch.float32)
+
+    for _ in range(120):
+      loss = F.binary_cross_entropy(net(x), y)
+      opt.zero_grad()
+      loss.backward()
+      opt.step()
+
+    self.assertGreater(net.predict_one([1.0, 0.0]), 0.85)
+    self.assertLess(net.predict_one([0.0, 1.0]), 0.15)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+      path = os.path.join(tmpdir, 'test_net.pt')
+      save_checkpoint(
+          path,
+          {'state': net.state_dict(), 'metadata': {'note': 'unit-test'}},
+      )
+      ckpt = load_checkpoint(path)
+      self.assertEqual(ckpt['metadata']['note'], 'unit-test')
+      reloaded = CardMLP(input_dim=2, hidden_dim=16, output_activation='sigmoid')
+      reloaded.load_state_dict(ckpt['state'])
+      self.assertAlmostEqual(
+          net.predict_one([1.0, 0.0]), reloaded.predict_one([1.0, 0.0]), places=5
+      )
 
   def test_all_three_rl_bots_take_immediate_win_and_obey_rules(self):
     for key in ('rl_td_value', 'rl_q_learning', 'rl_policy_gradient'):
@@ -86,14 +109,14 @@ class TestRLBots(unittest.TestCase):
 
   def test_all_three_rl_bots_complete_episode_and_save_reload(self):
     with tempfile.TemporaryDirectory() as tmpdir:
-      td = TDValueBot(hidden_dim=8, seed=1)
-      ql = QLearningBot(hidden_dim=8, seed=2)
-      pg = PolicyGradientBot(hidden_dim=8, seed=3)
+      td = TDValueBot(hidden_dim=16, seed=1)
+      ql = QLearningBot(hidden_dim=16, seed=2)
+      pg = PolicyGradientBot(hidden_dim=16, seed=3)
 
       for bot, fname in (
-          (td, 'td.json'),
-          (ql, 'ql.json'),
-          (pg, 'pg.json'),
+          (td, 'td.pt'),
+          (ql, 'ql.pt'),
+          (pg, 'pg.pt'),
       ):
         eng = GameEngine()
         eng.join_player('p0', bot.name, player_type=bot.player_type)
@@ -127,11 +150,11 @@ class TestRLBots(unittest.TestCase):
               eng.discard(p, obs['legal_actions'][0], by_index=False)
 
         if isinstance(bot, TDValueBot):
-          bot.learn_episode(records, 1.0, lr=0.01)
+          bot.learn_episode(records, 1.0, lr=0.003)
         elif isinstance(bot, QLearningBot):
-          bot.learn_episode(records, 1.0, lr=0.01)
+          bot.learn_episode(records, 1.0, lr=0.003)
         else:
-          bot.learn_episode(records, 1.0, actor_lr=0.01, critic_lr=0.01)
+          bot.learn_episode(records, 1.0, actor_lr=0.002, critic_lr=0.003)
 
         path = os.path.join(tmpdir, fname)
         bot.save(path, metadata={'trained_games': 1})
