@@ -87,14 +87,17 @@ gofish/
 │   └── tree_bot.py         # 1-level & 2-level Expectimax lookahead tree player
 ├── ml/
 │   ├── nn.py               # Clean PyTorch CardMLP (nn.Module, weights_only=True checkpoints)
-│   ├── features.py         # Shared 16-feature suit-invariant hand & table encoder
+│   ├── features.py         # Shared 19-feature suit-invariant hand & cross-partition encoder
+│   ├── replay.py           # Experience Replay Buffer for stable mini-batch PyTorch training
 │   ├── td_value.py         # RL Bot #1: PyTorch TD(lambda) afterstate Value learning
 │   ├── q_learning.py       # RL Bot #2: PyTorch DQN-style Q-Learning with target networks
-│   └── policy_gradient.py  # RL Bot #3: PyTorch Advantage Actor-Critic (A2C) Policy Gradient
-├── models/                 # Pre-trained PyTorch checkpoints (~56 KB total, models/*.pt)
+│   ├── policy_gradient.py  # RL Bot #3: PyTorch Advantage Actor-Critic (A2C) Policy Gradient
+│   └── alphazero_bot.py    # RL + Tree Bot (AlphaZero-Lite): PyTorch Value Net + 1-Level Tree
+├── models/                 # Pre-trained PyTorch checkpoints (models/*.pt) + league_history.json
 ├── scripts/
 │   ├── evaluate.py         # Headless bot-vs-bot arena (win rates, speed, optional self-play)
-│   └── train_rl.py         # 10,000-game progressive Elo RL curriculum trainer
+│   ├── train_rl.py         # 10,000-game progressive Elo RL curriculum trainer
+│   └── league.py           # Generational Bot League (Replay + Hall of Fame + King-of-the-Hill)
 ├── tests/
 │   ├── test_game.py        # Rules, engine turn flow, and zero-leakage trajectory tests
 │   ├── test_bots.py        # Bot legality, winning-move, and bot-vs-bot trajectory tests
@@ -178,6 +181,33 @@ The curriculum automatically gets harder across 4 stages (Starter/Beginner → H
 | 8 | Random Bot (Starter) | 576 | 0.0% |
 
 All three trained PyTorch checkpoints are included in `models/` and appear right in the lobby dropdown once PyTorch is installed!
+
+---
+
+## Step 4: Generational Bot League & AlphaZero-Lite Hybrid (`scripts/league.py`)
+
+Want to watch all three PyTorch RL bots **play against each other** and track which algorithm improves fastest? Run the Generational League:
+
+```bash
+python3 -m scripts.league --generations 6 --games-per-gen 2000
+```
+
+Each generation plays 2,000 bot-vs-bot games (RL vs RL + frozen Hall-of-Fame past champions + Heuristic & Tree bots), trains `TD Value` and `Q-Learning` with a **PyTorch Experience Replay Buffer (`batch_size=64`)**, evaluates all 9 players on the same fixed-seed benchmark, and uses **King-of-the-Hill gating** (only saving a new `.pt` checkpoint when Elo beats its previous best!).
+
+Then click **`📊 Bot League`** in the lobby (or visit `http://localhost:7171/league`) to view the Elo-over-Generations chart!
+
+### 6-Generation League Progression (12,000 Games)
+| Generation | Games | 🧠 RL + Tree (AlphaZero-Lite) | 🧠 Policy Gradient | 🧠 Q-Learning | 🧠 TD Value | Heuristic | Tree 1-Ply |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Gen 0 (Untrained) | 0 | 832 | 1133* | 827 | 794 | 1283 | 1232 |
+| Gen 1 | 2,000 | 1076 | 1092 | 979 | 1064 | 1113 | 1156 |
+| Gen 2 | 4,000 | 1073 | 1068 | 1041 | 1084 | 1098 | 1148 |
+| Gen 3 | 6,000 | 1067 | **1129** | 1029 | 1025 | 1151 | 1154 |
+| Gen 4 | 8,000 | 1081 | 1114 | 1048 | 1051 | 1079 | 1166 |
+| Gen 5 | 10,000 | 1091 | 1061 | **1069** | 1077 | 1075 | 1147 |
+| **Gen 6 (Final)** | **12,000** | **1124 (62.5% vs Heur!)** | **1104** | **1054** | **1023** | **1099** | **1152** |
+
+*Notice the AlphaZero lesson:* plugging the trained PyTorch `TD Value` network (1023 Elo alone) into a 1-level lookahead tree (`AlphaZero-Lite`) jumped it **+101 Elo to 1124 Elo** — tying `Tree Bot (2-Level)` and beating `Heuristic Bot` **62.5%** of the time!
 
 ---
 

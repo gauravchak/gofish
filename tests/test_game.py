@@ -285,6 +285,23 @@ class TestEngineAndTrajectories(unittest.TestCase):
       self.assertNotIn('public_history', rows[0])
       self.assertIn('hand_ids', rows[0])
 
+  def test_max_turns_prevents_infinite_shown_cycle(self):
+    eng = GameEngine(max_turns=6)
+    eng.join_player('p0', 'A')
+    eng.join_player('p1', 'B')
+    eng.start_match(seed=1)
+
+    while eng.winner is None:
+      p = eng.turn
+      if eng.phase == 'DRAW':
+        self.assertTrue(eng.draw(p, 'S')['ok'])
+      else:
+        obs = eng.get_observation(p)
+        self.assertTrue(eng.discard(p, obs['legal_actions'][0], by_index=False)['ok'])
+
+    self.assertEqual(eng.winner, 'Draw')
+    self.assertLessEqual(eng.turn_number, 6)
+
 
 if __name__ == '__main__':
   unittest.main()

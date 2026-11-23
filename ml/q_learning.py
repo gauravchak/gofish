@@ -127,9 +127,23 @@ class QLearningBot(BotPolicy):
     rec = {'phase': 'DISCARD', 'feats': all_feats[chosen_idx], 'all_feats': all_feats}
     return (card, rec) if return_record else card
 
-  def learn_episode(self, transitions, reward, lr=None):
-    """Applies batched Bellman Q-learning updates over one player's episode."""
-    if not transitions:
+  def build_replay_transitions(self, transitions, reward):
+    """Converts one episode into off-policy DQN tuples for a ReplayBuffer."""
+    items = []
+    n = len(transitions)
+    for idx, step in enumerate(transitions):
+      if idx == n - 1:
+        items.append((step['phase'], step['feats'], None, None, float(reward)))
+      else:
+        nxt = transitions[idx + 1]
+        items.append(
+            (step['phase'], step['feats'], nxt['phase'], nxt['all_feats'], None)
+        )
+    return items
+
+  def train_batch(self, batch, lr=None):
+    """True DQN mini-batch update from ReplayBuffer with live target network."""
+    if not batch:
       return 0.0
     if lr is not None:
       self.set_lr(lr)
@@ -137,26 +151,24 @@ class QLearningBot(BotPolicy):
     draw_x, draw_targets = [], []
     disc_x, disc_targets = [], []
 
-    n = len(transitions)
     with torch.no_grad():
-      for idx, step in enumerate(transitions):
-        if idx == n - 1:
-          target = float(reward)
+      for phase, feats, nxt_phase, nxt_all_feats, term_reward in batch:
+        if term_reward is not None:
+          target = term_reward
         else:
-          nxt = transitions[idx + 1]
           nxt_net = (
               self.target_draw_net
-              if nxt['phase'] == 'DRAW'
+              if nxt_phase == 'DRAW'
               else self.target_discard_net
           )
-          step_gamma = 0.99 if step['phase'] == 'DRAW' else self.gamma
-          target = step_gamma * max(nxt_net.predict_batch(nxt['all_feats']))
+          step_gamma = 0.99 if phase == 'DRAW' else self.gamma
+          target = step_gamma * max(nxt_net.predict_batch(nxt_all_feats))
 
-        if step['phase'] == 'DRAW':
-          draw_x.append(step['feats'])
+        if phase == 'DRAW':
+          draw_x.append(feats)
           draw_targets.append(target)
         else:
-          disc_x.append(step['feats'])
+          disc_x.append(feats)
           disc_targets.append(target)
 
     loss = torch.tensor(0.0)
@@ -180,6 +192,22 @@ class QLearningBot(BotPolicy):
     self.optimizer.step()
     self._soft_update_targets()
     return float(loss.item())
+
+  def learn_episode(self, transitions, reward, lr=None):
+    """Applies batched Bellman Q-learning updates over one player's episode."""
+    return self.train_batch(
+        self.build_replay_transitions(transitions, reward), lr=lr
+    )
+
+  def clone_frozen(self, label=None):
+    """Returns a frozen copy of this bot for Hall-of-Fame league sparring."""
+    snap = QLearningBot(hidden_dim=self.draw_net.hidden_dim)
+    snap.draw_net.load_state_dict(self.draw_net.state_dict())
+    snap.discard_net.load_state_dict(self.discard_net.state_dict())
+    snap.epsilon = 0.0
+    if label:
+      snap.name = label
+    return snap
 
   def save(self, path, metadata=None):
     self.metadata = metadata or self.metadata

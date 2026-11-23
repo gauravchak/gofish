@@ -13,12 +13,14 @@ from bots.novice import NoviceBot
 from bots.tree_bot import TreeBot
 
 try:
+  from ml.alphazero_bot import AlphaZeroLiteBot
   from ml.policy_gradient import PolicyGradientBot
   from ml.q_learning import QLearningBot
   from ml.td_value import TDValueBot
 
   HAS_TORCH = True
 except ImportError:
+  AlphaZeroLiteBot = None
   PolicyGradientBot = None
   QLearningBot = None
   TDValueBot = None
@@ -32,6 +34,7 @@ RL_MODEL_PATHS = {
     'rl_td_value': os.path.join(MODELS_DIR, 'td_value_model.pt'),
     'rl_q_learning': os.path.join(MODELS_DIR, 'q_learning_model.pt'),
     'rl_policy_gradient': os.path.join(MODELS_DIR, 'policy_gradient_model.pt'),
+    'rl_alphazero': os.path.join(MODELS_DIR, 'td_value_model.pt'),
 }
 
 _BASE_BOT_OPTIONS = (
@@ -47,6 +50,7 @@ _RL_BOT_OPTIONS = (
     {'key': 'rl_td_value', 'label': '🧠 RL Bot — TD Value (PyTorch)'},
     {'key': 'rl_q_learning', 'label': '🧠 RL Bot — Q-Learning (PyTorch)'},
     {'key': 'rl_policy_gradient', 'label': '🧠 RL Bot — Policy Gradient (PyTorch)'},
+    {'key': 'rl_alphazero', 'label': '🧠 RL + Tree Bot (AlphaZero-Lite)'},
 )
 
 BOT_OPTIONS = (
@@ -64,6 +68,7 @@ BOT_STARTING_ELO = {
     'bot:rl_td_value': 1080.0,
     'bot:rl_q_learning': 1100.0,
     'bot:rl_policy_gradient': 1100.0,
+    'bot:rl_alphazero': 1160.0,
 }
 
 # Elo thresholds for Auto-Match: brand-new players (1000 Elo) start with a warm-up
@@ -108,6 +113,8 @@ def create_bot(bot_key):
       return QLearningBot(model_path=RL_MODEL_PATHS['rl_q_learning'])
     if bot_key == 'rl_policy_gradient':
       return PolicyGradientBot(model_path=RL_MODEL_PATHS['rl_policy_gradient'])
+    if bot_key == 'rl_alphazero':
+      return AlphaZeroLiteBot(model_path=RL_MODEL_PATHS['rl_alphazero'])
   raise ValueError(f'Unknown bot key: {bot_key}')
 
 

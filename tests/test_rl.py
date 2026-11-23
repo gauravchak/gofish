@@ -14,12 +14,15 @@ from ml.features import (
 )
 
 if HAS_TORCH:
+  import random
   import torch
   import torch.nn.functional as F
   from ml import (
+      AlphaZeroLiteBot,
       CardMLP,
       PolicyGradientBot,
       QLearningBot,
+      ReplayBuffer,
       TDValueBot,
       load_checkpoint,
       save_checkpoint,
@@ -82,7 +85,7 @@ class TestPyTorchRLBots(unittest.TestCase):
       )
 
   def test_all_three_rl_bots_take_immediate_win_and_obey_rules(self):
-    for key in ('rl_td_value', 'rl_q_learning', 'rl_policy_gradient'):
+    for key in ('rl_td_value', 'rl_q_learning', 'rl_policy_gradient', 'rl_alphazero'):
       bot = create_bot(key)
       eng = GameEngine()
       eng.join_player('p0', bot.name, player_type=bot.player_type)
@@ -161,6 +164,21 @@ class TestPyTorchRLBots(unittest.TestCase):
         self.assertTrue(os.path.exists(path))
         reloaded = type(bot)(model_path=path)
         self.assertEqual(reloaded.metadata['trained_games'], 1)
+
+  def test_replay_buffer_and_clone_frozen(self):
+    buf = ReplayBuffer(capacity=5)
+    for i in range(10):
+      buf.push(i)
+    self.assertEqual(len(buf), 5)
+    sample = buf.sample(3, random.Random(1))
+    self.assertEqual(len(sample), 3)
+    self.assertTrue(all(v >= 5 for v in sample))
+
+    td = TDValueBot(hidden_dim=16, seed=11)
+    snap = td.clone_frozen('TD_G1')
+    self.assertEqual(snap.name, 'TD_G1')
+    az = AlphaZeroLiteBot(td_bot=snap, draw_sample=4)
+    self.assertEqual(az.player_type, 'bot:rl_alphazero')
 
 
 if __name__ == '__main__':

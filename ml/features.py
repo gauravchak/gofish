@@ -36,6 +36,9 @@ AFTERSTATE_FEATURE_NAMES = (
     'discard_matches_next_discard',
     'opp_shown_picks',
     'took_shown',
+    'cross_partition_win_outs',
+    'is_ready_hand',
+    'hand_connectedness',
 )
 
 ACTION_FEATURE_NAMES = AFTERSTATE_FEATURE_NAMES + (
@@ -74,17 +77,32 @@ def _group_stats(a, b, c, unseen_mask):
 
 
 def analyze_hand6(hand6_ids, unseen_mask):
-  """Finds the strongest 2x3 partition of a 6-card hand and returns summary stats."""
+  """Finds the strongest 2x3 partition AND cross-partition winning outs of a 6-card hand."""
   best_rank = (-1, -1, -1, -1.0)
   best_stats = None
+  # Distinct unseen cards across ALL 10 partitions that would immediately win!
+  win_outs_mask = 0
 
   for g1, g2 in SIX_CARD_PARTITIONS:
-    c1, o1, l1, d1, f1 = _group_stats(
-        hand6_ids[g1[0]], hand6_ids[g1[1]], hand6_ids[g1[2]], unseen_mask
-    )
-    c2, o2, l2, d2, f2 = _group_stats(
-        hand6_ids[g2[0]], hand6_ids[g2[1]], hand6_ids[g2[2]], unseen_mask
-    )
+    a1, b1, c1_id = hand6_ids[g1[0]], hand6_ids[g1[1]], hand6_ids[g1[2]]
+    a2, b2, c2_id = hand6_ids[g2[0]], hand6_ids[g2[1]], hand6_ids[g2[2]]
+    c1, o1, l1, d1, f1 = _group_stats(a1, b1, c1_id, unseen_mask)
+    c2, o2, l2, d2, f2 = _group_stats(a2, b2, c2_id, unseen_mask)
+
+    # If one group is already complete, any live out for the other group is a WINNING out!
+    if c1 == 1 and c2 == 0 and o2 == 1:
+      win_outs_mask |= (
+          pair_completers(a2, b2)
+          | pair_completers(a2, c2_id)
+          | pair_completers(b2, c2_id)
+      ) & unseen_mask
+    elif c2 == 1 and c1 == 0 and o1 == 1:
+      win_outs_mask |= (
+          pair_completers(a1, b1)
+          | pair_completers(a1, c1_id)
+          | pair_completers(b1, c1_id)
+      ) & unseen_mask
+
     complete = c1 + c2
     one_away = o1 + o2
     total_live = l1 + l2
@@ -102,7 +120,15 @@ def analyze_hand6(hand6_ids, unseen_mask):
           flex,
       )
 
-  return best_stats
+  # Count how many pairs of cards in the 6-card hand have a live completing card.
+  live_pairs = 0
+  for i in range(6):
+    ci = hand6_ids[i]
+    for j in range(i + 1, 6):
+      if pair_completers(ci, hand6_ids[j]) & unseen_mask:
+        live_pairs += 1
+
+  return best_stats + (win_outs_mask.bit_count(), live_pairs)
 
 
 def extract_afterstate_features(
@@ -114,10 +140,18 @@ def extract_afterstate_features(
     discarded_id=None,
     took_shown=False,
 ):
-  """Builds the 16-element normalized feature vector for a 6-card afterstate."""
-  complete, one_away, total_live, min_live, max_live, dead_proto, flex = (
-      analyze_hand6(hand6_ids, unseen_mask)
-  )
+  """Builds the 19-element normalized feature vector for a 6-card afterstate."""
+  (
+      complete,
+      one_away,
+      total_live,
+      min_live,
+      max_live,
+      dead_proto,
+      flex,
+      win_outs,
+      live_pairs,
+  ) = analyze_hand6(hand6_ids, unseen_mask)
 
   helps_next = 0
   matches_next_disc = 0
@@ -146,6 +180,9 @@ def extract_afterstate_features(
       min(matches_next_disc, 2) / 2.0,         # discard_matches_next_discard
       min(len(next_wanted), 3) / 3.0,          # opp_shown_picks
       1.0 if took_shown else 0.0,              # took_shown
+      min(win_outs, 8) / 8.0,                  # cross_partition_win_outs
+      1.0 if win_outs >= 1 else 0.0,           # is_ready_hand (1 draw from winning!)
+      min(live_pairs, 6) / 6.0,                # hand_connectedness
   ]
 
 

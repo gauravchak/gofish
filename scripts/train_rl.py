@@ -25,7 +25,7 @@ import torch
 from bots import BOT_STARTING_ELO, RL_MODEL_PATHS, create_bot
 from bots.heuristic import get_next_player_hints, get_unseen_mask
 from game import GameEngine, TrajectoryLogger, card_to_id, expected_score
-from ml.features import extract_afterstate_features
+from ml.features import AFTERSTATE_DIM, extract_afterstate_features
 from ml.policy_gradient import PolicyGradientBot
 from ml.q_learning import QLearningBot
 from ml.td_value import TDValueBot
@@ -99,7 +99,7 @@ def _play_training_game(bot0, bot1, key0, key1, seed, logger, lr, actor_lr):
         action, rec = bot.choose_discard(obs, return_record=True)
         q_transitions[p].append(rec)
         if has_td or has_pg:
-          all_afterstates[p].append(rec['feats'][:16])
+          all_afterstates[p].append(rec['feats'][:AFTERSTATE_DIM])
       elif isinstance(bot, PolicyGradientBot):
         action, rec = bot.choose_discard(obs, return_record=True)
         pg_steps[p].append(rec)
