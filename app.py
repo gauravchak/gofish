@@ -2,14 +2,17 @@
 
 import json
 import os
+import random
 import threading
 import time
 
 from flask import Flask, jsonify, render_template, request
 
 from bots import BOT_OPTIONS, BOT_STARTING_ELO, MODELS_DIR, choose_bot_for_elo, create_bot
+from bots.heuristic import get_next_player_hints, get_unseen_mask, score_hand
 from game import FamilyStore, GameEngine, TrajectoryLogger
-from game.rules import card_label, sort_cards
+from game.rules import card_label, card_to_id, id_to_card, sort_cards
+from scripts.evaluate import play_match
 
 app = Flask(__name__)
 
@@ -177,12 +180,211 @@ def league_page():
 
 @app.route('/league_data')
 def league_data():
-  if not os.path.exists(LEAGUE_HISTORY_FILE):
-    return jsonify({'available': False, 'history': []})
-  with open(LEAGUE_HISTORY_FILE, 'r', encoding='utf-8') as f:
-    data = json.load(f)
-  data['available'] = True
-  return jsonify(data)
+  payload = {'available': False, 'history': []}
+  if os.path.exists(LEAGUE_HISTORY_FILE):
+    with open(LEAGUE_HISTORY_FILE, 'r', encoding='utf-8') as f:
+      payload = json.load(f)
+    payload['available'] = True
+  payload['bot_options'] = [o for o in BOT_OPTIONS if o['key'] != 'auto']
+  return jsonify(payload)
+
+
+@app.route('/api/arena_match', methods=['POST'])
+def api_arena_match():
+  """Runs a fast headless Bot-vs-Bot matchup directly from the /league Lab UI."""
+  body = get_json_body()
+  key_a = body.get('bot_a', 'rl_alphazero')
+  key_b = body.get('bot_b', 'heuristic')
+  try:
+    games = int(body.get('games', 16))
+  except (TypeError, ValueError):
+    games = 16
+  max_games = 12 if ('tree_2ply' in (key_a, key_b)) else 40
+  games = max(2, min(games, max_games))
+
+  try:
+    bot_a = create_bot(key_a)
+    bot_b = create_bot(key_b)
+  except (ValueError, RuntimeError) as err:
+    return jsonify({'ok': False, 'error': str(err)})
+
+  wins_a = wins_b = draws = 0
+  total_turns = 0
+  a_ms, b_ms = [], []
+  base_seed = random.randint(1, 100000)
+
+  for i in range(games):
+    res = play_match(
+        bot_a, bot_b, seed=base_seed + i, logger=None, swap_seats=(i % 2 == 1)
+    )
+    if res['winner'] == 'A':
+      wins_a += 1
+    elif res['winner'] == 'B':
+      wins_b += 1
+    else:
+      draws += 1
+    total_turns += res['turns']
+    a_ms.extend(res['a_ms'])
+    b_ms.extend(res['b_ms'])
+
+  return jsonify({
+      'ok': True,
+      'bot_a_name': bot_a.name,
+      'bot_b_name': bot_b.name,
+      'games': games,
+      'wins_a': wins_a,
+      'wins_b': wins_b,
+      'draws': draws,
+      'avg_turns': round(total_turns / games, 1),
+      'avg_a_ms': round(sum(a_ms) / max(len(a_ms), 1), 2),
+      'avg_b_ms': round(sum(b_ms) / max(len(b_ms), 1), 2),
+  })
+
+
+@app.route('/api/random_puzzle')
+def api_random_puzzle():
+  """Deals a fun 6-card hand + 1 Shown card for the Interactive Bot Brain Sandbox."""
+  deck = list(range(52))
+  random.shuffle(deck)
+  hand_ids = sorted(deck[:6])
+  shown_id = deck[6]
+  return jsonify({
+      'ok': True,
+      'hand_ids': hand_ids,
+      'hand_labels': [card_label(id_to_card(c)) for c in hand_ids],
+      'shown_id': shown_id,
+      'shown_label': card_label(id_to_card(shown_id)),
+  })
+
+
+def _score_discard_options(bot, obs_disc):
+  """Returns sorted list of {'card', 'pct', 'display'} for the Bot Brain bar chart."""
+  legal_ids = list(obs_disc['legal_action_ids'])
+  hand7 = obs_disc['hand_ids']
+
+  # PyTorch Policy Gradient: exact masked softmax probabilities!
+  if bot.player_type == 'bot:rl_policy_gradient':
+    import torch
+    from ml.features import extract_all_action_features
+
+    _, all_feats = extract_all_action_features(obs_disc)
+    with torch.no_grad():
+      logits = bot.discard_actor(torch.tensor(all_feats, dtype=torch.float32))
+      probs = torch.softmax(logits, dim=-1).tolist()
+    items = [
+        {'card': card_label(id_to_card(cid)), 'raw': p, 'display': f'{100*p:.0f}%'}
+        for cid, p in zip(legal_ids, probs)
+    ]
+  # PyTorch Q-Learning: explicit Q(s, a) in (-1, 1)
+  elif bot.player_type == 'bot:rl_q_learning':
+    from ml.features import extract_all_action_features
+
+    _, all_feats = extract_all_action_features(obs_disc)
+    q_vals = bot.discard_net.predict_batch(all_feats)
+    items = [
+        {'card': card_label(id_to_card(cid)), 'raw': (q + 1.0) / 2.0, 'display': f'Q={q:+.2f}'}
+        for cid, q in zip(legal_ids, q_vals)
+    ]
+  # PyTorch TD Value & AlphaZero-Lite: predicted win probabilities!
+  elif bot.player_type in ('bot:rl_td_value', 'bot:rl_alphazero'):
+    from ml.features import extract_afterstate_features
+
+    v_net = bot.value_bot.net if bot.player_type == 'bot:rl_alphazero' else bot.net
+    unseen_mask = get_unseen_mask(obs_disc)
+    nw, nd = get_next_player_hints(obs_disc)
+    rows = []
+    for cid in legal_ids:
+      idx = hand7.index(cid)
+      h6 = hand7[:idx] + hand7[idx + 1 :]
+      rows.append(
+          extract_afterstate_features(
+              h6, unseen_mask, obs_disc['deck_remaining'], nw, nd, discarded_id=cid, took_shown=True
+          )
+      )
+    vals = v_net.predict_batch(rows)
+    items = [
+        {'card': card_label(id_to_card(cid)), 'raw': v, 'display': f'{100*v:.0f}% win'}
+        for cid, v in zip(legal_ids, vals)
+    ]
+  else:
+    # Heuristic / Tree / Beginner / Random: show hand score for each candidate discard.
+    unseen_mask = get_unseen_mask(obs_disc)
+    raw_scores = []
+    for cid in legal_ids:
+      idx = hand7.index(cid)
+      h6 = hand7[:idx] + hand7[idx + 1 :]
+      raw_scores.append(score_hand(h6, unseen_mask))
+    hi = max(max(raw_scores), 1.0)
+    items = [
+        {'card': card_label(id_to_card(cid)), 'raw': sc / hi, 'display': f'{sc:.1f}'}
+        for cid, sc in zip(legal_ids, raw_scores)
+    ]
+
+  items.sort(key=lambda x: x['raw'], reverse=True)
+  top = max(max(x['raw'] for x in items), 1e-6)
+  for item in items:
+    item['bar_pct'] = round(100.0 * max(item['raw'], 0.0) / top, 1)
+  return items
+
+
+@app.route('/api/ask_bot', methods=['POST'])
+def api_ask_bot():
+  """Asks any computer player what it would draw & discard on a given 6-card hand."""
+  body = get_json_body()
+  bot_key = body.get('bot_key', 'rl_alphazero')
+  hand_ids = body.get('hand_ids') or []
+  shown_id = body.get('shown_id')
+
+  if (
+      not isinstance(hand_ids, list)
+      or len(hand_ids) != 6
+      or not isinstance(shown_id, int)
+      or len(set(hand_ids + [shown_id])) != 7
+      or any(not (0 <= c < 52) for c in hand_ids + [shown_id])
+  ):
+    return jsonify({'ok': False, 'error': 'Provide 6 unique cards + 1 unique Shown card.'})
+
+  try:
+    bot = create_bot(bot_key)
+  except (ValueError, RuntimeError) as err:
+    return jsonify({'ok': False, 'error': str(err)})
+
+  # Build a clean single-turn GameEngine state to evaluate both DRAW and post-Shown DISCARD.
+  sim = GameEngine(logger=None)
+  sim.join_player('b0', bot.name, player_type=bot.player_type)
+  sim.join_player('b1', 'Opponent', player_type='human')
+  sim.start_match(seed=1)
+
+  used = set(hand_ids + [shown_id])
+  remaining = [id_to_card(c) for c in range(52) if c not in used]
+  sim.hands[0] = [id_to_card(c) for c in sorted(hand_ids)]
+  sim.hands[1] = remaining[:6]
+  sim.deck = remaining[6:]
+  sim.shown = [id_to_card(shown_id)]
+
+  obs_draw = sim.get_observation(0)
+  draw_choice = bot.choose_draw(obs_draw)
+  draw_thought = bot.last_thought or (
+      'Would pick Shown' if draw_choice == 'S' else 'Would draw Hidden'
+  )
+
+  # Also simulate taking Shown so kids can see how the bot ranks every discard!
+  sim.draw(0, 'S')
+  obs_disc = sim.get_observation(0)
+  disc_card = bot.choose_discard(obs_disc)
+  disc_thought = bot.last_thought or f'Would put down {card_label(disc_card)}'
+  ranking = _score_discard_options(bot, obs_disc)
+
+  return jsonify({
+      'ok': True,
+      'bot_name': bot.name,
+      'draw_choice': draw_choice,
+      'draw_label': f'Shown ({card_label(id_to_card(shown_id))})' if draw_choice == 'S' else 'Hidden Deck',
+      'draw_thought': draw_thought,
+      'discard_choice': card_label(disc_card),
+      'discard_thought': disc_thought,
+      'discard_ranking': ranking,
+  })
 
 
 @app.route('/join', methods=['POST'])
