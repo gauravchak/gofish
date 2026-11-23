@@ -301,6 +301,49 @@ class TestPyTorchRLBots(unittest.TestCase):
     self.assertGreater(e1['a'], e1['b'])
     self.assertGreater(e1['b'], e1['c'])
 
+  def test_xray_grpo_and_rollout_distillation_end_to_end(self):
+    from ml import DistilledBot, XRayGRPOBot, evaluate_state_with_rollouts
+    from scripts.train_variance_reduced import _play_grpo_mirror_pair
+
+    # 1. X-Ray GRPO: paired mirror deal + omniscient critic update + save/reload
+    grpo = XRayGRPOBot(hidden_dim=16, seed=11)
+    grpo.stochastic = True
+    opp = create_bot('heuristic')
+    pair = _play_grpo_mirror_pair(grpo, opp, deal_seed=321)
+    self.assertGreaterEqual(grpo.learn_grpo_batch([pair], ppo_epochs=2), 0.0)
+
+    # 2. Fair Rollout Teacher + Soft-Target Distillation Student + save/reload
+    eng = GameEngine()
+    eng.join_player('p0', 'A')
+    eng.join_player('p1', 'B')
+    eng.start_match(seed=44)
+    obs_draw = eng.get_observation(0)
+    sample_draw = evaluate_state_with_rollouts(
+        obs_draw, opp, num_worlds=3, rng=random.Random(1)
+    )
+    self.assertIsNotNone(sample_draw)
+    self.assertEqual(len(sample_draw['evs']), 2)
+
+    eng.draw(0, 'T')
+    obs_disc = eng.get_observation(0)
+    sample_disc = evaluate_state_with_rollouts(
+        obs_disc, opp, num_worlds=3, rng=random.Random(2)
+    )
+    self.assertIsNotNone(sample_disc)
+    self.assertEqual(len(sample_disc['evs']), 7)
+
+    student = DistilledBot(hidden_dim=16, seed=12)
+    loss = student.train_on_teacher_dataset([sample_draw, sample_disc], epochs=3)
+    self.assertGreaterEqual(loss, 0.0)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+      gp = os.path.join(tmpdir, 'grpo.pt')
+      dp = os.path.join(tmpdir, 'distill.pt')
+      grpo.save(gp, metadata={'batch': 1})
+      student.save(dp, metadata={'iteration': 1})
+      self.assertEqual(XRayGRPOBot(model_path=gp).metadata['batch'], 1)
+      self.assertEqual(DistilledBot(model_path=dp).metadata['iteration'], 1)
+
 
 if __name__ == '__main__':
   unittest.main()

@@ -262,14 +262,23 @@ def _score_discard_options(bot, obs_disc):
   legal_ids = list(obs_disc['legal_action_ids'])
   hand7 = obs_disc['hand_ids']
 
-  # PyTorch Policy Gradient: exact masked softmax probabilities!
-  if bot.player_type == 'bot:rl_policy_gradient':
+  # PyTorch Policy Gradient / X-Ray GRPO / Rollout Distilled: exact masked softmax probs!
+  if bot.player_type in (
+      'bot:rl_policy_gradient',
+      'bot:rl_grpo_xray',
+      'bot:rl_distilled',
+  ):
     import torch
     from ml.features import extract_all_action_features
 
     _, all_feats = extract_all_action_features(obs_disc)
+    net = (
+        bot.discard_net
+        if bot.player_type == 'bot:rl_distilled'
+        else bot.discard_actor
+    )
     with torch.no_grad():
-      logits = bot.discard_actor(torch.tensor(all_feats, dtype=torch.float32))
+      logits = net(torch.tensor(all_feats, dtype=torch.float32))
       probs = torch.softmax(logits, dim=-1).tolist()
     items = [
         {'card': card_label(id_to_card(cid)), 'raw': p, 'display': f'{100*p:.0f}%'}
