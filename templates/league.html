@@ -163,6 +163,22 @@
           `${data.bot_b_name}: ${data.wins_b} wins (${data.avg_b_ms} ms/move)  ·  ` +
           `Draws: ${data.draws}  ·  Avg turns: ${data.avg_turns}`;
         resBox.appendChild(summary);
+
+        if (data.skill) {
+          const s = data.skill;
+          const skillLine = document.createElement('div');
+          skillLine.style.fontSize = '13px';
+          skillLine.style.color = '#ffd166';
+          skillLine.style.marginTop = '6px';
+          const sign = s.excess_per_100 >= 0 ? '+' : '';
+          skillLine.innerText =
+            `🎯 Luck-Adjusted Skill (${s.total_pairs} duplicate deals): ` +
+            `Skill Sweeps (2-0) ${s.sweeps_a} vs ${s.sweeps_b}  ·  ` +
+            `Luck Splits (1-1): ${s.luck_splits}  ·  ` +
+            `Decisive Skill Win%: ${s.decisive_win_pct_a}%  ·  ` +
+            `Excess Advantage: ${sign}${s.excess_per_100} / 100 deals`;
+          resBox.appendChild(skillLine);
+        }
       } finally {
         btn.disabled = false;
       }

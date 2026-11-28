@@ -238,14 +238,18 @@ Because Rummy has high card-deal luck, single `+1 / -1` game outcomes are noisy.
 python3 -m scripts.train_variance_reduced --grpo-batches 4 --games-per-batch 5000 --distill-iters 2
 ```
 
-### 200-Game Unseen Duplicate-Deal Grand Comparison (100g vs Heuristic + 100g vs Tree 1-Level)
-| Rank | PyTorch RL Bot | vs Heuristic | vs Tree 1-Level | Combined (200g) |
-|---:|---|---:|---:|---:|
-| **T-1** | 🧠 Rollout Distilled (Expert Iter, 900 states) | **55.0%** | **53.0%** | **108–92 (54.0%)** |
-| **T-1** | 🧠 TD Value (Live Target Net) | **57.0%** | **51.0%** | **108–92 (54.0%)** |
-| **3** | 🧠 PPO Policy Gradient | **56.0%** | **51.0%** | **107–93 (53.5%)** |
-| **4** | 🧠 X-Ray GRPO (Omniscient Critic + Mirror Deals) | **53.0%** | **53.0%** | **106–94 (53.0%)** |
-| **5** | 🧠 Double DQN | **51.0%** | 47.0% | 98–102 (49.0%) |
+### 5,000-Game Luck-Adjusted Duplicate-Deal Benchmark (2,500g vs Heuristic + 2,500g vs Tree 1-Level)
+Measuring **excess skill over card luck** (stripping out `1–1` luck splits and counting `2–0` vs `0–2` mirror sweeps across 2,500 paired duplicate deals per bot, `±0.57%` SE):
+
+| Rank | Bot / Ensemble | 5k Score (`±SE`) | vs Heuristic | vs Tree 1-Level | Skill Sweeps (`2–0`/`0–2`) | Decisive Win% | Excess / 100 Deals | McNemar `z` |
+|---:|---|---:|---:|---:|---:|---:|---:|---:|
+| **1** | 🧠 Double DQN (PyTorch) | **50.77%** (±0.56%) | **50.90%** | **50.64%** | **405 – 367** | **52.5%** | **+1.52** | **+1.37** |
+| **2** | 🧠 TD Value (PyTorch) | **50.67%** (±0.57%) | **51.20%** | **50.14%** | **426 – 394** | **52.0%** | **+1.28** | **+1.12** |
+| **3** | Ensemble: Top-4 RL (Soft Prob) | **50.56%** (±0.57%) | **51.14%** | 49.98% | 415 – 387 | 51.7% | +1.12 | +0.99 |
+| **4** | Ensemble: Top-5 RL (Mode Vote) | **50.53%** (±0.57%) | **50.72%** | **50.34%** | 424 – 397 | 51.6% | +1.08 | +0.94 |
+| **5** | 🧠 X-Ray GRPO (PyTorch) | **50.43%** (±0.58%) | **50.88%** | 49.98% | 429 – 406 | 51.4% | +0.92 | +0.80 |
+| **6** | 🧠 PPO Policy Gradient | 49.90% (±0.57%) | 50.52% | 49.28% | 402 – 407 | 49.7% | -0.20 | -0.18 |
+| **7** | 🧠 Rollout Distilled *(900 states)* | 49.51% (±0.59%) | 50.00% | 49.02% | 424 – 449 | 48.6% | -1.00 | -0.85 |
 
 ---
 

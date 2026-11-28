@@ -344,6 +344,24 @@ class TestPyTorchRLBots(unittest.TestCase):
       self.assertEqual(XRayGRPOBot(model_path=gp).metadata['batch'], 1)
       self.assertEqual(DistilledBot(model_path=dp).metadata['iteration'], 1)
 
+    # 3. Verify luck-adjusted skill ('excess advantage') math on paired duplicate deals
+    from scripts.evaluate import compute_luck_adjusted_stats
+
+    stats = compute_luck_adjusted_stats([
+        ('A', 'A'),  # 2-0 skill sweep by A
+        ('A', 'A'),  # 2-0 skill sweep by A
+        ('A', 'A'),  # 2-0 skill sweep by A
+        ('B', 'B'),  # 0-2 skill sweep by B
+        ('A', 'B'),  # 1-1 luck split
+        ('B', 'A'),  # 1-1 luck split
+    ])
+    self.assertEqual(stats['sweeps_a'], 3)
+    self.assertEqual(stats['sweeps_b'], 1)
+    self.assertEqual(stats['luck_splits'], 2)
+    self.assertEqual(stats['decisive_win_pct_a'], 75.0)
+    self.assertAlmostEqual(stats['excess_per_100'], 33.33, places=2)
+    self.assertAlmostEqual(stats['mcnemar_z'], 1.0, places=2)
+
 
 if __name__ == '__main__':
   unittest.main()
