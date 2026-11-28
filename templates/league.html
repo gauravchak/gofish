@@ -37,16 +37,41 @@
     .rank-fill { height: 100%; background: linear-gradient(90deg, #2a9d8f, #ffd166); border-radius: 9px; transition: width 0.35s; }
     .rank-val { width: 78px; text-align: left; color: #d8f3dc; font-size: 13px; }
     .thought-pill { background: rgba(255,209,102,0.16); border: 1px solid rgba(255,209,102,0.45); border-radius: 10px; padding: 8px 12px; margin: 8px auto; max-width: 560px; color: #ffd166; font-size: 14px; }
+    .adv-wrap { display: flex; align-items: center; gap: 6px; justify-content: flex-end; }
+    .adv-track { position: relative; width: 110px; height: 12px; background: rgba(255,255,255,0.12); border-radius: 6px; overflow: hidden; }
+    .adv-mid { position: absolute; left: 50%; top: 0; bottom: 0; width: 1px; background: rgba(255,255,255,0.45); }
+    .adv-bar-pos { position: absolute; left: 50%; top: 0; bottom: 0; background: #80ed99; border-radius: 0 6px 6px 0; }
+    .adv-bar-neg { position: absolute; right: 50%; top: 0; bottom: 0; background: #ff8fa3; border-radius: 6px 0 0 6px; }
+    .pill-tag { display: inline-block; padding: 2px 7px; border-radius: 10px; font-size: 11px; font-weight: 700; }
+    .pill-pos { background: rgba(128,237,153,0.22); color: #80ed99; }
+    .pill-neu { background: rgba(255,255,255,0.12); color: #d8f3dc; }
+    .pill-neg { background: rgba(255,143,163,0.22); color: #ff8fa3; }
+    .pill-base { background: rgba(255,209,102,0.2); color: #ffd166; margin-left: 6px; }
+    .btn-toggle { background: rgba(255,255,255,0.14); color: white; font-size: 12px; padding: 5px 10px; }
+    .btn-toggle.active { background: #e9c46a; color: black; }
   </style>
 </head>
 <body>
   <div style="margin-bottom: 10px;"><a href="/">← Back to Game Lobby</a></div>
-  <h2>🧪 PyTorch Bot Lab & Generational League</h2>
+  <h2>🧪 PyTorch Bot Lab &amp; Strategy Advantage Leaderboard</h2>
+
+  <!-- 0. MAIN RANKING: OFFICIAL LUCK-ADJUSTED EXCESS ADVANTAGE LEADERBOARD -->
+  <div class="box">
+    <h3 style="margin-top: 0;">🏆 Strategy Advantage Leaderboard (Excess Over Baseline)</h3>
+    <p id="advSubtitle" style="font-size: 13px; color: #a8dadc; margin-top: -6px;">
+      Ranked by how much better each strategy performs <strong>in excess of card luck</strong> against our Standard Baseline Pool (50% Heuristic + 50% Tree 1-Level) using paired duplicate deals.
+    </p>
+    <div style="margin: 8px 0;">
+      <button id="btnTopOnly" class="btn-toggle active" onclick="setAdvFilter(false)">Top Contenders</button>
+      <button id="btnShowAll" class="btn-toggle" onclick="setAdvFilter(true)">Show All (incl. Beginner &amp; Random)</button>
+    </div>
+    <div id="advantageBoard">Loading official 5,000-game advantage leaderboard...</div>
+  </div>
 
   <!-- 1. INTERACTIVE INSTANT BOT-VS-BOT MATCHUP -->
   <div class="box">
     <h3 style="margin-top: 0;">⚔️ Run an Instant Bot-vs-Bot Matchup</h3>
-    <p style="font-size: 13px; color: #a8dadc; margin-top: -6px;">Pick any two bots and run fast alternating-seat matches right in your browser!</p>
+    <p style="font-size: 13px; color: #a8dadc; margin-top: -6px;">Pick any two bots and run paired duplicate-deal matches right in your browser (measures both Luck Splits &amp; Skill Advantage)!</p>
     <div>
       <select id="matchBotA"></select>
       <span style="font-weight: bold; margin: 0 4px;">vs</span>
@@ -76,8 +101,8 @@
 
   <!-- 3. INTERACTIVE GENERATIONAL ELO PROGRESSION CHART -->
   <div class="box">
-    <h3 style="margin-top: 0;">📊 Generational League — Elo Over Time</h3>
-    <p style="font-size: 13px; color: #a8dadc; margin-top: -6px;">Click any bot in the legend to toggle its curve, or hover over any dot for details.</p>
+    <h3 style="margin-top: 0;">📈 Training Progression — Per-Batch Elo (40,000 Games)</h3>
+    <p style="font-size: 13px; color: #a8dadc; margin-top: -6px;">Quick 32-game/pair snapshots during training to watch learning curves (use the 5,000-game Advantage Leaderboard above for official rankings). Click legend items to toggle.</p>
     <div id="chartTooltip" class="tooltip">Hover over a generation point to inspect Elo &amp; win rate vs Heuristic.</div>
     <div id="content">Loading league history...</div>
   </div>
@@ -93,8 +118,134 @@
     ];
 
     let leagueHistory = [];
+    let advantageData = null;
+    let showAllAdvantage = false;
     const visibleKeys = new Set(TRACKED.map((t) => t.key));
     let currentPuzzle = null;
+
+    function setAdvFilter(showAll) {
+      showAllAdvantage = showAll;
+      document.getElementById('btnTopOnly').classList.toggle('active', !showAll);
+      document.getElementById('btnShowAll').classList.toggle('active', showAll);
+      renderAdvantageBoard();
+    }
+
+    function renderAdvantageBoard() {
+      const box = document.getElementById('advantageBoard');
+      if (!advantageData || !advantageData.entries || !advantageData.entries.length) {
+        box.innerText = 'No 5,000-game Advantage Leaderboard yet. Run: python -m scripts.benchmark_advantage';
+        return;
+      }
+      const allRows = advantageData.entries;
+      const rows = showAllAdvantage
+        ? allRows
+        : allRows.filter((r) => r.category !== 'starter');
+
+      const sub = document.getElementById('advSubtitle');
+      sub.innerText =
+        `Excess skill advantage over ${advantageData.baseline_description} ` +
+        `(${advantageData.games_per_bot.toLocaleString()} paired duplicate games / strategy · updated ${advantageData.generated_at}).`;
+
+      const maxAbs = Math.max(
+        1.5,
+        ...rows.map((r) => Math.abs(r.excess_per_100))
+      );
+
+      box.innerHTML = '';
+      const tbl = document.createElement('table');
+      const thead = document.createElement('thead');
+      const hr = document.createElement('tr');
+      [
+        '#',
+        'Strategy',
+        'Excess / 100 Deals',
+        'Decisive Win%',
+        'Sweeps (2-0 / 0-2)',
+        '5k Win% (±SE)',
+        'Heur / Tree1',
+        'McNemar z',
+      ].forEach((h) => {
+        const th = document.createElement('th');
+        th.innerText = h;
+        hr.appendChild(th);
+      });
+      thead.appendChild(hr);
+      tbl.appendChild(thead);
+
+      const tbody = document.createElement('tbody');
+      rows.forEach((r) => {
+        const tr = document.createElement('tr');
+
+        const tdRank = document.createElement('td');
+        tdRank.style.textAlign = 'left';
+        tdRank.style.fontWeight = 'bold';
+        tdRank.innerText = `#${r.rank}`;
+        tr.appendChild(tdRank);
+
+        const tdName = document.createElement('td');
+        tdName.style.textAlign = 'left';
+        tdName.innerText = r.name;
+        if (r.category === 'baseline') {
+          const tag = document.createElement('span');
+          tag.className = 'pill-tag pill-base';
+          tag.innerText = 'BASELINE';
+          tdName.appendChild(tag);
+        }
+        tr.appendChild(tdName);
+
+        const tdAdv = document.createElement('td');
+        const wrap = document.createElement('div');
+        wrap.className = 'adv-wrap';
+        const valSpan = document.createElement('span');
+        valSpan.style.fontWeight = 'bold';
+        valSpan.style.color = r.excess_per_100 > 0 ? '#80ed99' : (r.excess_per_100 < 0 ? '#ff8fa3' : '#ffd166');
+        valSpan.innerText = `${r.excess_per_100 >= 0 ? '+' : ''}${r.excess_per_100.toFixed(2)}`;
+        const track = document.createElement('div');
+        track.className = 'adv-track';
+        const mid = document.createElement('div');
+        mid.className = 'adv-mid';
+        track.appendChild(mid);
+        const pctW = Math.min(50, (Math.abs(r.excess_per_100) / maxAbs) * 50);
+        if (pctW > 0.5) {
+          const bar = document.createElement('div');
+          bar.className = r.excess_per_100 >= 0 ? 'adv-bar-pos' : 'adv-bar-neg';
+          bar.style.width = pctW.toFixed(1) + '%';
+          track.appendChild(bar);
+        }
+        wrap.appendChild(valSpan);
+        wrap.appendChild(track);
+        tdAdv.appendChild(wrap);
+        tr.appendChild(tdAdv);
+
+        const tdDec = document.createElement('td');
+        tdDec.innerText = `${r.decisive_win_pct.toFixed(1)}%`;
+        tr.appendChild(tdDec);
+
+        const tdSw = document.createElement('td');
+        tdSw.innerText = `${r.sweeps_win}–${r.sweeps_loss}`;
+        tr.appendChild(tdSw);
+
+        const tdWin = document.createElement('td');
+        tdWin.innerText = `${r.win_pct.toFixed(2)}% ±${r.se_pct.toFixed(2)}%`;
+        tr.appendChild(tdWin);
+
+        const tdSplit = document.createElement('td');
+        tdSplit.innerText = `${r.vs_heuristic_pct.toFixed(1)}% / ${r.vs_tree1_pct.toFixed(1)}%`;
+        tr.appendChild(tdSplit);
+
+        const tdZ = document.createElement('td');
+        const pill = document.createElement('span');
+        pill.className =
+          'pill-tag ' + (r.mcnemar_z >= 0.8 ? 'pill-pos' : (r.mcnemar_z <= -0.8 ? 'pill-neg' : 'pill-neu'));
+        pill.innerText = `${r.mcnemar_z >= 0 ? '+' : ''}${r.mcnemar_z.toFixed(2)}`;
+        tdZ.appendChild(pill);
+        tr.appendChild(tdZ);
+
+        tbody.appendChild(tr);
+      });
+      tbl.appendChild(tbody);
+      box.appendChild(tbl);
+    }
 
     function colorClass(label) {
       return (label.includes('♥') || label.includes('♦')) ? 'red' : '';
@@ -410,10 +561,12 @@
       const res = await fetch('/league_data');
       const data = await res.json();
       const opts = data.bot_options || [];
-      fillSelect('matchBotA', opts, 'rl_alphazero');
+      fillSelect('matchBotA', opts, 'rl_q_learning');
       fillSelect('matchBotB', opts, 'heuristic');
-      fillSelect('brainBotSelect', opts, 'rl_policy_gradient');
+      fillSelect('brainBotSelect', opts, 'rl_ensemble_soft');
+      advantageData = data.advantage_leaderboard || null;
       leagueHistory = data.available ? (data.history || []) : [];
+      renderAdvantageBoard();
       renderLeagueChart();
       dealPuzzle();
     }

@@ -15,6 +15,7 @@ from bots.tree_bot import TreeBot
 try:
   from ml.alphazero_bot import AlphaZeroLiteBot
   from ml.distill_bot import DistilledBot
+  from ml.ensemble_bot import EnsembleBot
   from ml.grpo_bot import XRayGRPOBot
   from ml.policy_gradient import PolicyGradientBot
   from ml.q_learning import QLearningBot
@@ -24,6 +25,7 @@ try:
 except ImportError:
   AlphaZeroLiteBot = None
   DistilledBot = None
+  EnsembleBot = None
   PolicyGradientBot = None
   QLearningBot = None
   TDValueBot = None
@@ -58,6 +60,8 @@ _RL_BOT_OPTIONS = (
     {'key': 'rl_policy_gradient', 'label': '🧠 RL Bot — PPO Policy Gradient (PyTorch)'},
     {'key': 'rl_grpo_xray', 'label': '🧠 RL Bot — X-Ray GRPO (PyTorch)'},
     {'key': 'rl_distilled', 'label': '🧠 RL Bot — Rollout Distilled (PyTorch)'},
+    {'key': 'rl_ensemble_soft', 'label': '🧠 RL Ensemble — Soft Prob (Top-4)'},
+    {'key': 'rl_ensemble_mode', 'label': '🧠 RL Ensemble — Mode Vote (Top-5)'},
     {'key': 'rl_alphazero', 'label': '🧠 RL + Tree Bot (AlphaZero-Lite)'},
 )
 
@@ -78,6 +82,8 @@ BOT_STARTING_ELO = {
     'bot:rl_policy_gradient': 1100.0,
     'bot:rl_grpo_xray': 1140.0,
     'bot:rl_distilled': 1150.0,
+    'bot:rl_ensemble_soft': 1150.0,
+    'bot:rl_ensemble_mode': 1150.0,
     'bot:rl_alphazero': 1160.0,
 }
 
@@ -112,6 +118,18 @@ def create_bot(bot_key):
     return TreeBot(depth=1)
   if bot_key == 'tree_2ply':
     return TreeBot(depth=2)
+  if bot_key in ('rl_ensemble_soft', 'rl_ensemble_mode'):
+    if not HAS_TORCH:
+      raise RuntimeError(
+          'PyTorch is not installed. Run: pip install -r requirements-ml.txt'
+      )
+    top4 = [
+        create_bot(k)
+        for k in ('rl_q_learning', 'rl_td_value', 'rl_grpo_xray', 'rl_policy_gradient')
+    ]
+    if bot_key == 'rl_ensemble_soft':
+      return EnsembleBot(top4, mode='soft')
+    return EnsembleBot(top4 + [create_bot('rl_distilled')], mode='vote')
   if bot_key in RL_MODEL_PATHS:
     if not HAS_TORCH:
       raise RuntimeError(
