@@ -2,6 +2,7 @@
 
 from ml.alphazero_bot import AlphaZeroLiteBot
 from ml.distill_bot import DistilledBot, evaluate_state_with_rollouts
+from ml.ensemble_bot import EnsembleBot
 from ml.features import (
     ACTION_DIM,
     ACTION_FEATURE_NAMES,
@@ -27,6 +28,7 @@ __all__ = [
     'AlphaZeroLiteBot',
     'CardMLP',
     'DistilledBot',
+    'EnsembleBot',
     'PolicyGradientBot',
     'QLearningBot',
     'ReplayBuffer',

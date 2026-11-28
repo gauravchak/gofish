@@ -19,6 +19,9 @@ app = Flask(__name__)
 LOG_FILE = 'trajectories.jsonl'
 FAMILY_FILE = 'family.json'
 LEAGUE_HISTORY_FILE = os.path.join(MODELS_DIR, 'league_history.json')
+ADVANTAGE_LEADERBOARD_FILE = os.path.join(
+    MODELS_DIR, 'advantage_leaderboard.json'
+)
 BOT_SPEED_PRESETS = {'slow': 1.25, 'normal': 0.65, 'fast': 0.18}
 
 game_lock = threading.Lock()
@@ -180,11 +183,14 @@ def league_page():
 
 @app.route('/league_data')
 def league_data():
-  payload = {'available': False, 'history': []}
+  payload = {'available': False, 'history': [], 'advantage_leaderboard': None}
   if os.path.exists(LEAGUE_HISTORY_FILE):
     with open(LEAGUE_HISTORY_FILE, 'r', encoding='utf-8') as f:
-      payload = json.load(f)
+      payload.update(json.load(f))
     payload['available'] = True
+  if os.path.exists(ADVANTAGE_LEADERBOARD_FILE):
+    with open(ADVANTAGE_LEADERBOARD_FILE, 'r', encoding='utf-8') as f:
+      payload['advantage_leaderboard'] = json.load(f)
   payload['bot_options'] = [o for o in BOT_OPTIONS if o['key'] != 'auto']
   return jsonify(payload)
 
@@ -272,8 +278,20 @@ def _score_discard_options(bot, obs_disc):
   legal_ids = list(obs_disc['legal_action_ids'])
   hand7 = obs_disc['hand_ids']
 
+  # PyTorch RL Ensemble: consensus probability + vote count across members!
+  if bot.player_type in ('bot:rl_ensemble_soft', 'bot:rl_ensemble_mode'):
+    scored = bot.score_discard_options(obs_disc)
+    n_members = len(bot.members)
+    items = [
+        {
+            'card': card_label(id_to_card(cid)),
+            'raw': prob,
+            'display': f'{100*prob:.0f}% ({votes}/{n_members})',
+        }
+        for cid, prob, votes in scored
+    ]
   # PyTorch Policy Gradient / X-Ray GRPO / Rollout Distilled: exact masked softmax probs!
-  if bot.player_type in (
+  elif bot.player_type in (
       'bot:rl_policy_gradient',
       'bot:rl_grpo_xray',
       'bot:rl_distilled',

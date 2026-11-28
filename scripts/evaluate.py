@@ -178,6 +178,8 @@ def main():
       'rl_policy_gradient',
       'rl_grpo_xray',
       'rl_distilled',
+      'rl_ensemble_soft',
+      'rl_ensemble_mode',
       'rl_alphazero',
   ]
   parser.add_argument('--bot-a', default='tree_1ply', choices=bot_choices)

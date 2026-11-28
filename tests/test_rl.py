@@ -362,6 +362,19 @@ class TestPyTorchRLBots(unittest.TestCase):
     self.assertAlmostEqual(stats['excess_per_100'], 33.33, places=2)
     self.assertAlmostEqual(stats['mcnemar_z'], 1.0, places=2)
 
+    # 4. Verify EnsembleBot (both soft & vote modes) plays legal games and scores discards
+    ens_soft = create_bot('rl_ensemble_soft')
+    ens_mode = create_bot('rl_ensemble_mode')
+    eng_e = GameEngine()
+    eng_e.join_player('p0', ens_soft.name, player_type=ens_soft.player_type)
+    eng_e.join_player('p1', ens_mode.name, player_type=ens_mode.player_type)
+    eng_e.start_match(seed=77)
+    eng_e.draw(0, ens_soft.choose_draw(eng_e.get_observation(0)))
+    obs_d = eng_e.get_observation(0)
+    scored = ens_soft.score_discard_options(obs_d)
+    self.assertEqual(len(scored), len(obs_d['legal_action_ids']))
+    self.assertTrue(eng_e.discard(0, ens_soft.choose_discard(obs_d), by_index=False)['ok'])
+
 
 if __name__ == '__main__':
   unittest.main()
