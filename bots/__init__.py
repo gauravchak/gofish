@@ -14,6 +14,8 @@ from bots.tree_bot import TreeBot
 
 try:
   from ml.alphazero_bot import AlphaZeroLiteBot
+  from ml.distill_bot import DistilledBot
+  from ml.grpo_bot import XRayGRPOBot
   from ml.policy_gradient import PolicyGradientBot
   from ml.q_learning import QLearningBot
   from ml.td_value import TDValueBot
@@ -21,9 +23,11 @@ try:
   HAS_TORCH = True
 except ImportError:
   AlphaZeroLiteBot = None
+  DistilledBot = None
   PolicyGradientBot = None
   QLearningBot = None
   TDValueBot = None
+  XRayGRPOBot = None
   HAS_TORCH = False
 
 MODELS_DIR = os.path.join(
@@ -35,6 +39,8 @@ RL_MODEL_PATHS = {
     'rl_q_learning': os.path.join(MODELS_DIR, 'q_learning_model.pt'),
     'rl_policy_gradient': os.path.join(MODELS_DIR, 'policy_gradient_model.pt'),
     'rl_alphazero': os.path.join(MODELS_DIR, 'alphazero_model.pt'),
+    'rl_grpo_xray': os.path.join(MODELS_DIR, 'grpo_xray_model.pt'),
+    'rl_distilled': os.path.join(MODELS_DIR, 'distilled_model.pt'),
 }
 
 _BASE_BOT_OPTIONS = (
@@ -50,6 +56,8 @@ _RL_BOT_OPTIONS = (
     {'key': 'rl_td_value', 'label': '🧠 RL Bot — TD Value (PyTorch)'},
     {'key': 'rl_q_learning', 'label': '🧠 RL Bot — Double DQN (PyTorch)'},
     {'key': 'rl_policy_gradient', 'label': '🧠 RL Bot — PPO Policy Gradient (PyTorch)'},
+    {'key': 'rl_grpo_xray', 'label': '🧠 RL Bot — X-Ray GRPO (PyTorch)'},
+    {'key': 'rl_distilled', 'label': '🧠 RL Bot — Rollout Distilled (PyTorch)'},
     {'key': 'rl_alphazero', 'label': '🧠 RL + Tree Bot (AlphaZero-Lite)'},
 )
 
@@ -68,6 +76,8 @@ BOT_STARTING_ELO = {
     'bot:rl_td_value': 1080.0,
     'bot:rl_q_learning': 1100.0,
     'bot:rl_policy_gradient': 1100.0,
+    'bot:rl_grpo_xray': 1140.0,
+    'bot:rl_distilled': 1150.0,
     'bot:rl_alphazero': 1160.0,
 }
 
@@ -113,6 +123,10 @@ def create_bot(bot_key):
       return QLearningBot(model_path=RL_MODEL_PATHS['rl_q_learning'])
     if bot_key == 'rl_policy_gradient':
       return PolicyGradientBot(model_path=RL_MODEL_PATHS['rl_policy_gradient'])
+    if bot_key == 'rl_grpo_xray':
+      return XRayGRPOBot(model_path=RL_MODEL_PATHS['rl_grpo_xray'])
+    if bot_key == 'rl_distilled':
+      return DistilledBot(model_path=RL_MODEL_PATHS['rl_distilled'])
     if bot_key == 'rl_alphazero':
       return AlphaZeroLiteBot(model_path=RL_MODEL_PATHS['rl_alphazero'])
   raise ValueError(f'Unknown bot key: {bot_key}')

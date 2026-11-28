@@ -95,12 +95,15 @@ gofish/
 │   ├── td_value.py         # RL Bot #1: PyTorch TD(lambda) Value Net with live target network
 │   ├── q_learning.py       # RL Bot #2: PyTorch Double DQN with soft target nets & MC blend
 │   ├── policy_gradient.py  # RL Bot #3: PyTorch Batched PPO (GAE + clipped surrogate loss)
-│   └── alphazero_bot.py    # RL Bot #4: True AlphaZero-Lite (Policy + Value + 1-Level Expectimax)
+│   ├── alphazero_bot.py    # RL Bot #4: True AlphaZero-Lite (Policy + Value + 1-Level Expectimax)
+│   ├── grpo_bot.py         # RL Bot #5: Omniscient X-Ray Critic + Duplicate-Deal GRPO
+│   └── distill_bot.py      # RL Bot #6: Rollout Teacher Distillation (Expert Iteration Student)
 ├── models/                 # Pre-trained PyTorch checkpoints (models/*.pt) + league_history.json
 ├── scripts/
 │   ├── evaluate.py         # Headless bot-vs-bot arena (win rates, speed, optional self-play)
 │   ├── train_rl.py         # 10,000-game progressive Elo RL curriculum trainer
-│   └── league.py           # Generational Bot League (Replay + Hall of Fame + King-of-the-Hill)
+│   ├── league.py           # Generational Bot League (Replay + Hall of Fame + King-of-the-Hill)
+│   └── train_variance_reduced.py  # X-Ray GRPO + Rollout Teacher Distillation trainer & benchmark
 ├── tests/
 │   ├── test_game.py        # Rules, engine turn flow, and zero-leakage trajectory tests
 │   ├── test_bots.py        # Bot legality, winning-move, and bot-vs-bot trajectory tests
@@ -218,6 +221,35 @@ Each 5,000-game batch plays RL-vs-RL, frozen Hall-of-Fame champions, Heuristic, 
 | Gen 6 *(resume)* | 30,000 | 1124 | 1137 | 1087 | 1070 | 1134 | 1150 |
 | Gen 7 *(resume)* | 35,000 | 1116 | **1151** | 1102 | 1100 | 1132 | 1159 |
 | **Gen 8 (Final)** | **40,000** | **1126** | **1146 (T-#1, 65.1%!)** | **1110** | **1096 (55% vs T1!)** | **1136** | **1146** |
+
+---
+
+## Step 5: Beating Card-Luck Variance (`scripts/train_variance_reduced.py`)
+
+Because Rummy has high card-deal luck, single `+1 / -1` game outcomes are noisy. Two modern RL tricks slash that variance cleanly (without ever cheating at play time!):
+
+1. **🧠 RL Bot — X-Ray GRPO ([ml/grpo_bot.py](ml/grpo_bot.py)):**
+   - **Omniscient ("X-Ray") Critic (training only):** Like Microsoft's Suphx Mahjong AI, the Critic sees *both* players' real hands during training so it doesn't blame the Actor for an unwinnable opponent deal, while the Actor remains 100% fair at play time.
+   - **Duplicate-Deal GRPO:** Every training deck is played twice with seats swapped (mirror deals), cancelling out pure deal luck.
+2. **🧠 RL Bot — Rollout Distilled ([ml/distill_bot.py](ml/distill_bot.py)):**
+   - **Expert Iteration (LLM-style Distillation):** Freezes real game turns (strictly legal info only), runs 12 Common-Random-Number valid unseen worlds per legal move to measure true EVs, and distills the Teacher's sharp probabilities into a fast ~0.2 ms PyTorch Student — then plugs the Student back in as the rollout player for Iteration 2!
+
+```bash
+python3 -m scripts.train_variance_reduced --grpo-batches 4 --games-per-batch 5000 --distill-iters 2
+```
+
+### 5,000-Game Luck-Adjusted Duplicate-Deal Benchmark (2,500g vs Heuristic + 2,500g vs Tree 1-Level)
+Measuring **excess skill over card luck** (stripping out `1–1` luck splits and counting `2–0` vs `0–2` mirror sweeps across 2,500 paired duplicate deals per bot, `±0.57%` SE):
+
+| Rank | Bot / Ensemble | 5k Score (`±SE`) | vs Heuristic | vs Tree 1-Level | Skill Sweeps (`2–0`/`0–2`) | Decisive Win% | Excess / 100 Deals | McNemar `z` |
+|---:|---|---:|---:|---:|---:|---:|---:|---:|
+| **1** | 🧠 Double DQN (PyTorch) | **50.77%** (±0.56%) | **50.90%** | **50.64%** | **405 – 367** | **52.5%** | **+1.52** | **+1.37** |
+| **2** | 🧠 TD Value (PyTorch) | **50.67%** (±0.57%) | **51.20%** | **50.14%** | **426 – 394** | **52.0%** | **+1.28** | **+1.12** |
+| **3** | Ensemble: Top-4 RL (Soft Prob) | **50.56%** (±0.57%) | **51.14%** | 49.98% | 415 – 387 | 51.7% | +1.12 | +0.99 |
+| **4** | Ensemble: Top-5 RL (Mode Vote) | **50.53%** (±0.57%) | **50.72%** | **50.34%** | 424 – 397 | 51.6% | +1.08 | +0.94 |
+| **5** | 🧠 X-Ray GRPO (PyTorch) | **50.43%** (±0.58%) | **50.88%** | 49.98% | 429 – 406 | 51.4% | +0.92 | +0.80 |
+| **6** | 🧠 PPO Policy Gradient | 49.90% (±0.57%) | 50.52% | 49.28% | 402 – 407 | 49.7% | -0.20 | -0.18 |
+| **7** | 🧠 Rollout Distilled *(900 states)* | 49.51% (±0.59%) | 50.00% | 49.02% | 424 – 449 | 48.6% | -1.00 | -0.85 |
 
 ---
 

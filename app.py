@@ -12,7 +12,7 @@ from bots import BOT_OPTIONS, BOT_STARTING_ELO, MODELS_DIR, choose_bot_for_elo, 
 from bots.heuristic import get_next_player_hints, get_unseen_mask, score_hand
 from game import FamilyStore, GameEngine, TrajectoryLogger
 from game.rules import card_label, card_to_id, id_to_card, sort_cards
-from scripts.evaluate import play_match
+from scripts.evaluate import compute_luck_adjusted_stats, play_match
 
 app = Flask(__name__)
 
@@ -201,6 +201,7 @@ def api_arena_match():
     games = 16
   max_games = 12 if ('tree_2ply' in (key_a, key_b)) else 40
   games = max(2, min(games, max_games))
+  games -= games % 2  # Always even so every deal is played from both seats!
 
   try:
     bot_a = create_bot(key_a)
@@ -211,11 +212,14 @@ def api_arena_match():
   wins_a = wins_b = draws = 0
   total_turns = 0
   a_ms, b_ms = [], []
+  pair_outcomes = []
+  first_w = None
   base_seed = random.randint(1, 100000)
 
   for i in range(games):
+    swap = (i % 2 == 1)
     res = play_match(
-        bot_a, bot_b, seed=base_seed + i, logger=None, swap_seats=(i % 2 == 1)
+        bot_a, bot_b, seed=base_seed + (i // 2), logger=None, swap_seats=swap
     )
     if res['winner'] == 'A':
       wins_a += 1
@@ -223,10 +227,15 @@ def api_arena_match():
       wins_b += 1
     else:
       draws += 1
+    if not swap:
+      first_w = res['winner']
+    else:
+      pair_outcomes.append((first_w, res['winner']))
     total_turns += res['turns']
     a_ms.extend(res['a_ms'])
     b_ms.extend(res['b_ms'])
 
+  skill = compute_luck_adjusted_stats(pair_outcomes)
   return jsonify({
       'ok': True,
       'bot_a_name': bot_a.name,
@@ -238,6 +247,7 @@ def api_arena_match():
       'avg_turns': round(total_turns / games, 1),
       'avg_a_ms': round(sum(a_ms) / max(len(a_ms), 1), 2),
       'avg_b_ms': round(sum(b_ms) / max(len(b_ms), 1), 2),
+      'skill': skill,
   })
 
 
@@ -262,14 +272,23 @@ def _score_discard_options(bot, obs_disc):
   legal_ids = list(obs_disc['legal_action_ids'])
   hand7 = obs_disc['hand_ids']
 
-  # PyTorch Policy Gradient: exact masked softmax probabilities!
-  if bot.player_type == 'bot:rl_policy_gradient':
+  # PyTorch Policy Gradient / X-Ray GRPO / Rollout Distilled: exact masked softmax probs!
+  if bot.player_type in (
+      'bot:rl_policy_gradient',
+      'bot:rl_grpo_xray',
+      'bot:rl_distilled',
+  ):
     import torch
     from ml.features import extract_all_action_features
 
     _, all_feats = extract_all_action_features(obs_disc)
+    net = (
+        bot.discard_net
+        if bot.player_type == 'bot:rl_distilled'
+        else bot.discard_actor
+    )
     with torch.no_grad():
-      logits = bot.discard_actor(torch.tensor(all_feats, dtype=torch.float32))
+      logits = net(torch.tensor(all_feats, dtype=torch.float32))
       probs = torch.softmax(logits, dim=-1).tolist()
     items = [
         {'card': card_label(id_to_card(cid)), 'raw': p, 'display': f'{100*p:.0f}%'}
